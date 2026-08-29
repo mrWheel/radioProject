@@ -15,8 +15,8 @@ Native ESP-IDF 5.2+ project for VS Code, the TFT-LCD-Display-EC11 piggyback boar
 ## Prerequisites
 
 - VS Code with Espressif's ESP-IDF extension
-- ESP-IDF 5.2 through 5.5
-- An ESP32-S3 board with 4 MB flash matching TheGrooveboxProject R3 pinout
+- ESP-IDF 5.2 or newer (developed and tested against 6.0.2)
+- An ESP32-S3 board with 4 MB flash and octal PSRAM, matching TheGrooveboxProject R3 pinout
 
 Managed dependencies are downloaded on the first configure. The two explicitly requested components are vendored under `components/` with their upstream licences.
 
@@ -45,21 +45,35 @@ Supported codec values are `mp3` and `aac`. Plain HTTP and HTTPS URLs work; TLS 
 
 ## Hardware defaults
 
-The defaults are copied from `mrWheel/TheGrooveboxProject` `platformio.ini`: TFT BL/RST/CS/SCLK/MOSI/DC = 2/4/5/12/11/15; EC11 push/A/B = 6/16/17; auxiliary = 1; I2S BCLK/LRCLK/DATA/enable = 38/40/42/41. Display size is 320×240.
+The TFT/EC11/auxiliary pins are copied from `mrWheel/TheGrooveboxProject` `platformio.ini` and live in the `esp32_s3_piggyback` component's own Kconfig: TFT BL/RST/CS/SCLK/MOSI/DC = 2/4/5/12/11/15; EC11 push/A/B = 6/16/17; auxiliary = 1. Display size is 320×240.
 
-Change them under `idf.py menuconfig` → **Component config → Radio hardware**. Defaults remain fixed when menuconfig is not used.
+The I2S pins live in `radio_board`'s Kconfig: BCLK/LRCLK/DATA = 38/40/42. The PCM5102A's enable pin is disabled by default (`-1`); set `RADIO_I2S_ENABLE_GPIO` if your board wires one.
+
+Change them under `idf.py menuconfig` → **Component config → TFT LCD Display EC11** (display/encoder pins) or **→ Radio hardware** (I2S pins, encoder direction, selection timeout, default volume). Defaults remain fixed when menuconfig is not used.
 
 ## Architecture
 
 - `radio_storage`: mounts LittleFS and creates its flash image
 - `station_store`: validates and loads `stations.json`
-- `radio_input`: non-blocking EC11 and button polling
-- `radio_display`: ESP-IDF `esp_lcd` ST7789 driver and UI state indication
-- `radio_audio`: HTTP(S) → Espressif MP3/AAC decoder → PCM volume → I2S
-- `ftp_service`: exposes the mounted LittleFS through mrWheel's server
+- `radio_settings`: persists the last-played station index in NVS
+- `radio_board`: Kconfig-driven I2S pin/timeout/volume defaults shared by other components
+- `wifi_provisioner` (MichMich): saved-credential Wi-Fi connection with captive-portal fallback
+- `radio_input`: EC11 rotation/button events from the piggyback component, dispatched to the UI task
+- `radio_display`: renders the Volume/Selection/Status screens through mrWheel's `esp32_s3_piggyback` component (never drives the ST7789/EC11 hardware directly)
+- `radio_audio`: HTTP(S) fetch and the Espressif MP3/AAC decoder → I2S output, split across two tasks (see below)
+- `ftp_service`: exposes the mounted LittleFS through mrWheel's `ftp_server`
 - `main`: application state machine and the exact 20-second rule
 
 Station names and mode changes are also printed to the serial monitor. The compact native display renderer uses distinct Volume/Selection screens without pulling in a large GUI framework.
+
+### Audio pipeline
+
+`radio_audio` runs two pinned tasks connected by a 64 KB PSRAM ring buffer, so a network stall can never stall the I2S feed directly:
+
+- `radio_fetch` (core 0, alongside the Wi-Fi driver task): owns the HTTP(S)/ICY connection, strips interleaved ICY `StreamTitle` metadata, and pushes raw compressed audio bytes into the buffer.
+- `radio_stream` (core 1): pulls bytes from the buffer, decodes MP3/AAC via `esp_audio_simple_dec`, applies bounded software volume, and writes PCM to I2S.
+
+The I2S channel is also configured with extra DMA margin (~174 ms instead of the ESP-IDF default ~33 ms) and `auto_clear` enabled, so an underrun emits silence instead of repeating stale samples.
 
 ## Notes
 

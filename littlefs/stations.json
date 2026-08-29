@@ -3,7 +3,7 @@
   "stations": [
     {
       "name": "Radio Swiss Jazz",
-      "url": "https://stream.srg-ssr.ch/m/rsj/mp3_128",
+      "url": "http://distribution.srg-ssr.ch/m/rsj/mp3_128",
       "codec": "mp3"
     },
     {
@@ -32,9 +32,19 @@
       "codec": "mp3"
     },
     {
+      "name": "NPO Soul and Jazz",
+      "url": "https://icecast.omroep.nl/radio6-bb-aac",
+      "codec": "aac"
+    },
+    {
       "name": "NPO Klassiek",
       "url": "https://icecast.omroep.nl/npoklassiek-bb-mp3",
       "codec": "mp3"
+    },
+    {
+      "name": "NPO Radio 6",
+      "url": "https://icecast.omroep.nl/radio6-bb-aac",
+      "codec": "aac"
     },
     {
       "name": "NPO Radio 5",

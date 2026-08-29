@@ -12,15 +12,15 @@ Build and maintain a production-oriented VS Code ESP-IDF internet-radio firmware
 6. Default UI mode is Volume. Rotation changes volume. EN-push opens Station Selection. Rotation browses stations and is the only action that restarts its 20-second inactivity timeout. EN-push selects/starts the highlighted station and returns to Volume. Timeout cancels browsing and returns to Volume. Reserve GPIO 1's button for future functionality.
 7. Keep networking, decoding, UI/input and file operations in separate components/tasks. No UI loop may block on network traffic and I2S functioning.
 8. Support direct HTTP/HTTPS MP3 and AAC streams. Feed decoded 16-bit PCM to the PCM5102A over I2S and apply bounded software volume.
-9. Embed the initial LittleFS content in the normal build/flash workflow using a custom 8 MB partition table.
-10. Use messaging for. Make the `Internet->I2S` path the most important path that should NOT be interupted ().
+9. Embed the initial LittleFS content in the normal build/flash workflow using a custom partition table. Active default is 4 MB (`partitions/radio_4mb.csv`); an 8 MB variant (`partitions/radio_8mb.csv`) is available for boards with more flash.
+10. Decouple network fetch from decoding/I2S with a buffer between them (messaging), so the `Internet->I2S` path is the most important path and is never interrupted by network stalls.
 
 ## Hardware defaults
 
 - TFT BL 2, RST 4, CS 5, SCLK 12, MOSI 11, DC 15; 320×240
 - EC11 EN-push 6, A 16, B 17
 - Reserved auxiliary button 1
-- I2S BCLK 38, LRCLK 40, DATA 42, enable 41
+- I2S BCLK 38, LRCLK 40, DATA 42; DAC enable disabled by default (-1), override via menuconfig if your board needs one
 
 ## Quality bar
 
