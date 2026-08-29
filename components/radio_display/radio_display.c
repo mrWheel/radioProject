@@ -29,18 +29,25 @@ static QueueHandle_t s_queue;
 
 //-- Last-drawn Volume-screen state, kept so a now-playing title arriving
 //-- asynchronously from radio_audio can be merged into a redraw without the
-//-- caller having to resend the volume/station it already sent
+//-- caller having to resend the volume/station it already sent, and so a
+//-- rotation-only update can skip redrawing what hasn't changed
 static display_mode_t s_current_mode = DISPLAY_MODE_STATUS;
 static int s_cached_volume;
 static char s_cached_station[RADIO_NAME_MAX];
 static char s_cached_title[DISPLAY_TITLE_MAX];
 
+//-- Windowed-list redraw cache: SIZE_MAX means "not drawn yet", forcing a
+//-- full redraw the first time the Select-Station screen is shown
+static size_t s_cached_list_start = SIZE_MAX;
+static size_t s_cached_list_selected = SIZE_MAX;
+
 static void draw_hint(const char *text)
 {
 	uint16_t height = tft_ec11_height();
+	int scale = 2;
 	tft_ec11_set_background(TFT_EC11_BLACK);
-	tft_ec11_set_text_style(TFT_EC11_CYAN, 1);
-	tft_ec11_draw_text_simple(4, height - 10, text);
+	tft_ec11_set_text_style(TFT_EC11_CYAN, scale);
+	tft_ec11_draw_text_simple(4, (int)height - 8 * scale - 2, text);
 }
 
 static void draw_header(uint16_t width, const char *text, int font_scale)
@@ -55,7 +62,44 @@ static void draw_header(uint16_t width, const char *text, int font_scale)
 	tft_ec11_draw_text(4, y, (width - 8) / (6 * font_scale), text ? text : "");
 }
 
-static void draw_volume(int volume, const char *station, const char *title)
+//-- Fixed 4-char slot ("100%" is the widest possible value) so the field's
+//-- own background-clear always wipes the previous digits, regardless of how
+//-- many digits the new value has, and the number no longer jitters
+//-- left/right as the digit count changes
+static void draw_volume_percent(uint16_t width, int volume)
+{
+	char percent[8];
+	snprintf(percent, sizeof(percent), "%d%%", volume);
+	tft_ec11_set_background(TFT_EC11_BLACK);
+	tft_ec11_set_text_style(TFT_EC11_YELLOW, 3);
+	const size_t slots = 4;
+	int x = ((int)width - (int)slots * 6 * 3) / 2;
+	tft_ec11_draw_text(x, 48, slots, percent);
+}
+
+//-- Only the bar's interior is touched; the static white border is drawn
+//-- once by draw_volume_full()
+static void draw_volume_bar(uint16_t width, int volume)
+{
+	int bar_x = 20, bar_y = 96, bar_w = width - 40, bar_h = 20;
+	tft_ec11_fill_rect(bar_x + 2, bar_y + 2, bar_w - 4, bar_h - 4, TFT_EC11_BLACK);
+	int fill_w = (bar_w - 4) * volume / 100;
+	if (fill_w > 0) {
+		tft_ec11_fill_rect(bar_x + 2, bar_y + 2, fill_w, bar_h - 4, TFT_EC11_GREEN);
+	}
+}
+
+//-- Always draws (even for an empty title) so a title that disappears
+//-- (station with no metadata) clears instead of leaving stale text behind
+static void draw_volume_title(uint16_t width, const char *title)
+{
+	int bar_y = 96, bar_h = 20;
+	tft_ec11_set_background(TFT_EC11_BLACK);
+	tft_ec11_set_text_style(TFT_EC11_CYAN, 1);
+	tft_ec11_draw_text(4, bar_y + bar_h + 8, (width - 8) / 6, title ? title : "");
+}
+
+static void draw_volume_full(int volume, const char *station, const char *title)
 {
 	uint16_t width = tft_ec11_width();
 
@@ -64,41 +108,32 @@ static void draw_volume(int volume, const char *station, const char *title)
 
 	draw_header(width, station, 3);
 
-	char percent[8];
-	snprintf(percent, sizeof(percent), "%d%%", volume);
-	tft_ec11_set_background(TFT_EC11_BLACK);
-	tft_ec11_set_text_style(TFT_EC11_YELLOW, 3);
-	int text_width = (int)strlen(percent) * 18;
-	tft_ec11_draw_text_simple((width - text_width) / 2, 48, percent);
-
 	int bar_x = 20, bar_y = 96, bar_w = width - 40, bar_h = 20;
 	tft_ec11_fill_rect(bar_x, bar_y, bar_w, bar_h, TFT_EC11_WHITE);
-	tft_ec11_fill_rect(bar_x + 2, bar_y + 2, bar_w - 4, bar_h - 4, TFT_EC11_BLACK);
-	int fill_w = (bar_w - 4) * volume / 100;
-	if (fill_w > 0) {
-		tft_ec11_fill_rect(bar_x + 2, bar_y + 2, fill_w, bar_h - 4, TFT_EC11_GREEN);
-	}
 
-	if (title && title[0]) {
-		tft_ec11_set_background(TFT_EC11_BLACK);
-		tft_ec11_set_text_style(TFT_EC11_CYAN, 1);
-		tft_ec11_draw_text(4, bar_y + bar_h + 8, (width - 8) / 6, title);
-	}
+	draw_volume_percent(width, volume);
+	draw_volume_bar(width, volume);
+	draw_volume_title(width, title);
 
-	draw_hint("Push=Stations");
+	draw_hint("Push4Station");
 }
 
-//-- Windowed so a station list longer than the screen still shows the selection, centered where possible
-static void draw_station_list(size_t selected)
+static void draw_station_row(int title_h, int row_h, size_t slot_chars, int row, size_t index, bool is_selected)
+{
+	const radio_station_t *entry = station_store_get(index);
+	tft_ec11_set_background(is_selected ? TFT_EC11_WHITE : TFT_EC11_BLACK);
+	tft_ec11_set_text_style(is_selected ? TFT_EC11_BLACK : TFT_EC11_WHITE, 2);
+	tft_ec11_draw_text(4, title_h + row * row_h, slot_chars, entry ? entry->name : "");
+}
+
+//-- Windowed so a station list longer than the screen still shows the selection, centered where
+//-- possible. When the visible window (`start`) doesn't change between two calls, only the
+//-- previously- and newly-highlighted rows are redrawn instead of the whole screen.
+static void draw_station_list(size_t selected, bool force_full)
 {
 	uint16_t width = tft_ec11_width();
 	uint16_t height = tft_ec11_height();
 	size_t count = station_store_count();
-
-	tft_ec11_set_background(TFT_EC11_BLACK);
-	tft_ec11_clear();
-
-	draw_header(width, "Select Station", 2);
 
 	const int title_h = DISPLAY_HEADER_H;
 	const int row_h = 20;
@@ -113,17 +148,31 @@ static void draw_station_list(size_t selected)
 
 	size_t slot_chars = (width - 8) / 12;
 
-	for (int row = 0; row < visible_rows; row++) {
-		size_t index = start + (size_t)row;
-		if (index >= count) break;
-		const radio_station_t *entry = station_store_get(index);
-		bool is_selected = (index == selected);
-		tft_ec11_set_background(is_selected ? TFT_EC11_WHITE : TFT_EC11_BLACK);
-		tft_ec11_set_text_style(is_selected ? TFT_EC11_BLACK : TFT_EC11_WHITE, 2);
-		tft_ec11_draw_text(4, title_h + row * row_h, slot_chars, entry ? entry->name : "");
+	bool full = force_full || start != s_cached_list_start;
+	if (full) {
+		tft_ec11_set_background(TFT_EC11_BLACK);
+		tft_ec11_clear();
+
+		draw_header(width, "Select Station", 2);
+
+		for (int row = 0; row < visible_rows; row++) {
+			size_t index = start + (size_t)row;
+			if (index >= count) break;
+			draw_station_row(title_h, row_h, slot_chars, row, index, index == selected);
+		}
+
+		draw_hint("Turn:Browse EN:Play");
+	} else if (s_cached_list_selected != selected) {
+		if (s_cached_list_selected >= start && s_cached_list_selected - start < (size_t)visible_rows) {
+			int old_row = (int)(s_cached_list_selected - start);
+			draw_station_row(title_h, row_h, slot_chars, old_row, s_cached_list_selected, false);
+		}
+		int new_row = (int)(selected - start);
+		draw_station_row(title_h, row_h, slot_chars, new_row, selected, true);
 	}
 
-	draw_hint("Turn=Browse  EN=Play");
+	s_cached_list_start = start;
+	s_cached_list_selected = selected;
 }
 
 static void draw_status(const char *status)
@@ -167,22 +216,33 @@ static void display_task(void *argument)
 	for (;;) {
 		if (xQueueReceive(s_queue, &message, portMAX_DELAY) != pdTRUE) continue;
 		switch (message.mode) {
-		case DISPLAY_MODE_VOLUME:
+		case DISPLAY_MODE_VOLUME: {
+			bool entering = s_current_mode != DISPLAY_MODE_VOLUME;
+			bool station_changed = strcmp(s_cached_station, message.station) != 0;
 			s_current_mode = DISPLAY_MODE_VOLUME;
 			s_cached_volume = message.volume;
 			snprintf(s_cached_station, sizeof(s_cached_station), "%s", message.station);
-			draw_volume(s_cached_volume, s_cached_station, s_cached_title);
+			if (entering || station_changed) {
+				draw_volume_full(s_cached_volume, s_cached_station, s_cached_title);
+			} else {
+				uint16_t width = tft_ec11_width();
+				draw_volume_percent(width, s_cached_volume);
+				draw_volume_bar(width, s_cached_volume);
+			}
 			break;
+		}
 		case DISPLAY_MODE_TITLE:
 			snprintf(s_cached_title, sizeof(s_cached_title), "%s", message.title);
 			if (s_current_mode == DISPLAY_MODE_VOLUME) {
-				draw_volume(s_cached_volume, s_cached_station, s_cached_title);
+				draw_volume_title(tft_ec11_width(), s_cached_title);
 			}
 			break;
-		case DISPLAY_MODE_STATION_SELECT:
+		case DISPLAY_MODE_STATION_SELECT: {
+			bool entering = s_current_mode != DISPLAY_MODE_STATION_SELECT;
 			s_current_mode = DISPLAY_MODE_STATION_SELECT;
-			draw_station_list(message.selected);
+			draw_station_list(message.selected, entering);
 			break;
+		}
 		case DISPLAY_MODE_STATUS:
 			s_current_mode = DISPLAY_MODE_STATUS;
 			draw_status(message.status);

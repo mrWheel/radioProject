@@ -5,6 +5,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "freertos/FreeRTOS.h"
@@ -75,6 +76,7 @@ static void fetch_task(void *arg)
 	size_t meta_int = 0;
 	char *meta_hdr = NULL;
 	if (esp_http_client_get_header(h, "icy-metaint", &meta_hdr) == ESP_OK && meta_hdr) meta_int = (size_t)atoi(meta_hdr);
+	ESP_LOGI("radio_audio", "icy-metaint=%d", (int)meta_int);
 	uint8_t *meta_buf = meta_int ? malloc(255 * 16 + 1) : NULL;
 	if (meta_int && !meta_buf) meta_int = 0;
 	size_t meta_remain = meta_int;
