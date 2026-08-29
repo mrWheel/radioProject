@@ -170,7 +170,19 @@ static void stream_task(void *arg)
 				out_size = frame.needed_size;
 				continue;
 			}
-			if (e != ESP_AUDIO_ERR_OK) break;
+			//-- A real decode error means frame sync was lost (e.g. a network
+			//-- hiccup corrupted/dropped bytes). Skip one byte and retry so the
+			//-- decoder resyncs on the next valid frame header within a few
+			//-- bytes, instead of staying stuck on the same bad offset until
+			//-- the whole `in` buffer wraps (which was the cause of the
+			//-- multi-second bursts of "AAC only support 1-2 channel" /
+			//-- "Not supported" / decode-error clusters and the audible crackle).
+			if (e != ESP_AUDIO_ERR_OK) {
+				if (raw.len <= 1) break;
+				raw.buffer += 1;
+				raw.len -= 1;
+				continue;
+			}
 			if (frame.decoded_size) {
 				esp_audio_simple_dec_info_t info;
 				if (!configured && esp_audio_simple_dec_get_info(dec, &info) == ESP_AUDIO_ERR_OK) {
