@@ -1,0 +1,26 @@
+menu "Radio hardware"
+    config RADIO_I2S_BCLK_GPIO
+        int "PCM5102A BCLK GPIO"
+        default 38
+    config RADIO_I2S_WS_GPIO
+        int "PCM5102A LRCLK GPIO"
+        default 40
+    config RADIO_I2S_DOUT_GPIO
+        int "PCM5102A DATA GPIO"
+        default 42
+    config RADIO_I2S_ENABLE_GPIO
+        int "DAC enable GPIO (-1 disables)"
+        range -1 48
+        default -1
+    config RADIO_ENCODER_REVERSED
+        bool "Reverse encoder direction"
+        default n
+    config RADIO_SELECTION_TIMEOUT_MS
+        int "Station-selection inactivity timeout (ms)"
+        default 20000
+    config RADIO_DEFAULT_VOLUME
+        int "Default volume percent"
+        range 0 100
+        default 40
+endmenu
+

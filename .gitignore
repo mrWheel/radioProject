@@ -1,0 +1,24 @@
+# ESP-IDF build output
+build/
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
+
+# ESP-IDF and local tooling
+.espressif/
+.vscode/.cache/
+.clangd
+
+# PlatformIO output, if used locally
+.pio/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Temporary files
+*.swp
+*.swo
+*~

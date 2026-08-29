@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "stations": [
+    {
+      "name": "Radio Swiss Jazz",
+      "url": "https://stream.srg-ssr.ch/m/rsj/mp3_128",
+      "codec": "mp3"
+    },
+    {
+      "name": "SomaFM Groove Salad",
+      "url": "https://ice2.somafm.com/groovesalad-128-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "SomaFM Secret Agent",
+      "url": "https://ice2.somafm.com/secretagent-128-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "NPO Radio 1",
+      "url": "https://icecast.omroep.nl/radio1-bb-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "NPO Radio 2",
+      "url": "https://icecast.omroep.nl/radio2-bb-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "NPO 3FM",
+      "url": "https://icecast.omroep.nl/3fm-bb-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "NPO Klassiek",
+      "url": "https://icecast.omroep.nl/npoklassiek-bb-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "NPO Radio 5",
+      "url": "https://icecast.omroep.nl/radio5-bb-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "NPO FunX",
+      "url": "https://icecast.omroep.nl/funx-bb-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "Qmusic",
+      "url": "https://stream.qmusic.nl/qmusic/mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "Radio 538",
+      "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/RADIO538.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "Sky Radio",
+      "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/SKYRADIO.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "Radio 10",
+      "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/RADIO10.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "Radio Veronica",
+      "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/VERONICA.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "100% NL",
+      "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/100PNL_MP3.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "SLAM!",
+      "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/SLAM_MP3.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "BNR Nieuwsradio",
+      "url": "https://stream.bnr.nl/bnr_mp3_128_20",
+      "codec": "mp3"
+    },
+    {
+      "name": "JOE",
+      "url": "https://stream.joe.nl/joe/mp3",
+      "codec": "mp3"
+    }
+  ]
+}

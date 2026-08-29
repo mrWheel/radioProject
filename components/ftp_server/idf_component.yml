@@ -1,0 +1,27 @@
+version: "0.1.0"
+description: "Reusable FTP server for an already-mounted ESP-IDF VFS filesystem"
+license: "GPL-3.0-or-later"
+maintainers:
+  - "Willem Aandewiel"
+tags:
+  - ftp
+  - filesystem
+  - vfs
+  - networking
+url: "https://github.com/mrWheel/ftp-server"
+repository_info:
+  path: "components/ftp_server"
+repository: "https://github.com/mrWheel/ftp-server.git"
+documentation: "https://github.com/mrWheel/ftp-server/tree/main/components/ftp_server"
+issues: "https://github.com/mrWheel/ftp-server/issues"
+changelog: "https://github.com/mrWheel/ftp-server/blob/main/components/ftp_server/CHANGELOG.md"
+targets:
+  - esp32
+  - esp32s2
+  - esp32s3
+  - esp32c3
+  - esp32c6
+dependencies:
+  idf: ">=5.2,<7.0"
+files:
+  use_gitignore: true

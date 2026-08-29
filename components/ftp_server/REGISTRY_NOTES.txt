@@ -1,0 +1,9 @@
+Before publishing:
+1. Confirm the desired GitHub repository and Component Registry namespace.
+2. Confirm maintainer metadata and repository URLs in idf_component.yml.
+3. Ensure the GPL-3.0-or-later repository LICENSE is included as required by
+   the chosen Component Registry publication layout.
+4. Run the Espressif component manifest linter.
+5. Build the component with the supported ESP-IDF versions and targets.
+6. Review the unencrypted FTP and unauthenticated-operation warnings before a
+   production release.

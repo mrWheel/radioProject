@@ -1,0 +1,81 @@
+menu "TFT LCD Display EC11"
+
+config TFT_EC11_PIN_CS
+    int "TFT CS GPIO"
+    default 5
+
+config TFT_EC11_PIN_DC
+    int "TFT DC GPIO"
+    default 15
+
+config TFT_EC11_PIN_RST
+    int "TFT reset GPIO"
+    default 4
+
+config TFT_EC11_PIN_BL
+    int "TFT backlight GPIO"
+    default 2
+
+config TFT_EC11_PIN_SCLK
+    int "TFT SCLK GPIO"
+    default 12
+
+config TFT_EC11_PIN_MOSI
+    int "TFT MOSI GPIO"
+    default 11
+
+config TFT_EC11_PIN_ENC_A
+    int "Encoder A GPIO"
+    default 16
+
+config TFT_EC11_PIN_ENC_B
+    int "Encoder B GPIO"
+    default 17
+
+config TFT_EC11_PIN_ENC_BUTTON
+    int "Encoder push GPIO"
+    default 6
+
+config TFT_EC11_PIN_AUX_BUTTON
+    int "Auxiliary push GPIO"
+    default 1
+
+config TFT_EC11_SPI_CLOCK_HZ
+    int "Display SPI clock (Hz)"
+    default 40000000
+    range 1000000 80000000
+
+config TFT_EC11_DEFAULT_ROTATION
+    int "Default rotation (0-3)"
+    default 3
+    range 0 3
+
+config TFT_EC11_DEFAULT_INVERT
+    bool "Enable ST7789 panel inversion"
+    default n
+
+config TFT_EC11_BGR
+    bool "Use BGR color order"
+    default n
+
+config TFT_EC11_ENCODER_TRANSITIONS
+    int "Quadrature transitions per logical detent"
+    default 4
+    range 1 4
+
+config TFT_EC11_DEBOUNCE_MS
+    int "Button debounce (ms)"
+    default 30
+    range 5 200
+
+config TFT_EC11_MEDIUM_MS
+    int "Medium press boundary (ms)"
+    default 450
+    range 100 3000
+
+config TFT_EC11_LONG_MS
+    int "Long press boundary (ms)"
+    default 900
+    range 200 10000
+
+endmenu

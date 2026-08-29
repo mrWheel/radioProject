@@ -1,0 +1,6 @@
+dependencies:
+  idf: ">=5.2,<7.0"
+  espressif/esp_audio_codec: "2.6.2"
+  espressif/cjson: "^1.7.19"
+  joltwallet/littlefs: "^1.20.0"
+
