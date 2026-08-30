@@ -15,5 +15,11 @@
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=/Users/willema/Documents/espidfProjects.nosync/radioProject/build"
-  ]
+  ],
+  "chat.tools.terminal.autoApprove": {
+    "/^source \"\\$HOME/\\.espressif/tools/activate_idf_v6\\.0\\.2\\.sh\" && cd /Users/willema/Documents/espidfProjects\\.nosync/radioProject && idf\\.py build$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  }
 }

@@ -29,3 +29,257 @@ Keep public component APIs small, bound all arrays and JSON reads, check ESP-IDF
 ## VSCode/ESP-IDF
 
 The idf.py command is in 'source "$HOME/.espressif/tools/activate_idf_v6.0.2.sh"'
+
+## Radio station debug and browser-comparison requirements
+
+The project must provide diagnostic output that explains why a station works in a browser but fails or behaves differently on the ESP32-S3. The goal is not to redesign the player. The goal is to make the monitor logs self-explanatory for every station-open attempt.
+
+### Debugging objective
+
+For every station URL attempt, the output must clearly answer:
+
+- which station is being opened and which exact URL is used;
+- whether the URL is HTTP or HTTPS;
+- whether the hostname resolves correctly and which IP addresses were returned;
+- whether TCP connection and TLS negotiation succeed;
+- which HTTP status and response headers were returned;
+- whether a redirect occurred and where it leads;
+- whether the response is audio, HTML, JSON/XML, a playlist, HLS/DASH, or an error page;
+- whether ICY metadata is announced and whether `icy-metaint` is present;
+- whether the first payload bytes look like MP3, AAC, Ogg, FLAC, M3U, PLS, HTML, or another format;
+- which decoder was selected and whether it started successfully;
+- what the first decoder or read failure was;
+- why the stream stopped, including EOF, timeout, reset, TLS failure, or decoder failure;
+- what ESP-IDF error code and `errno` were involved;
+- how much heap was available before and after the connection attempt.
+
+### Logging structure and standards
+
+Use structured logging grouped by subsystem and maintain clear TAG values such as:
+
+- `RADIO`
+- `RADIO_HTTP`
+- `RADIO_TLS`
+- `RADIO_STREAM`
+- `RADIO_CODEC`
+- `RADIO_BUFFER`
+
+Use:
+
+- `ESP_LOGE()` for actual failures;
+- `ESP_LOGW()` for suspicious but recoverable conditions;
+- `ESP_LOGI()` for important connection and stream facts;
+- `ESP_LOGD()` for lower-level diagnostics;
+- `ESP_LOGV()` only for very detailed per-packet analysis.
+
+Do not flood the monitor during normal playback. Most diagnostic output should occur during station selection, URL opening, DNS/TCP/TLS resolution, HTTP response inspection, payload sniffing, decoder startup, and final teardown.
+
+### Required output patterns
+
+Every station attempt must begin with a clear connection banner showing:
+
+- station name;
+- input URL;
+- free heap before open;
+- minimum free heap so far.
+
+At the end of a failed attempt, print a matching summary showing:
+
+- station name;
+- final URL;
+- HTTP status if available;
+- response Content-Type;
+- failure reason;
+- ESP-IDF error code or `errno` value.
+
+For successful streams, print a final summary showing:
+
+- final URL;
+- codec selected;
+- content type;
+- final status.
+
+### URL, DNS, TCP, and TLS diagnostics
+
+The project must log the parsed URL fields before opening a network connection:
+
+- scheme;
+- host;
+- port;
+- path.
+
+Log DNS resolution results for all practical families, especially IPv4 and IPv6. If DNS fails, log the exact `getaddrinfo` error rather than hiding it behind a generic connection failure.
+
+Log TCP connect success or failure explicitly, including `errno` and `strerror(errno)` whenever meaningful.
+
+For HTTPS streams, log:
+
+- HTTPS detected;
+- certificate bundle setup;
+- SNI hostname where applicable;
+- TLS handshake success/failure;
+- certificate verification result;
+- esp-tls/mbedTLS errors if available;
+- unsupported protocol/cipher or hostname mismatch warnings.
+
+Do not globally disable certificate verification as a workaround. The purpose is diagnosis, not hiding TLS errors.
+
+### HTTP request and response diagnostics
+
+Before sending the request, log the actual method, URL, and important headers such as:
+
+- `User-Agent`;
+- `Accept`;
+- `Icy-Metadata`;
+- `Connection`;
+- optional `Range`, `Authorization`, etc.
+
+For direct Internet radio streams, prefer:
+
+```text
+User-Agent: ESP32-Internet-Radio/1.0
+Icy-Metadata: 1
+```
+
+`Icy-Metadata: 1` is important because some servers only expose ICY metadata when it is explicitly requested. If the server returns `icy-metaint: N`, the stream contains metadata blocks interleaved with audio data and those bytes must be removed before passing audio to the decoder.
+
+The project must always log the HTTP status code and important response headers, including at least:
+
+- `Content-Type`;
+- `Content-Length`;
+- `Transfer-Encoding`;
+- `Connection`;
+- `Location`;
+- `Server`;
+- `Cache-Control`;
+- `Accept-Ranges`;
+- `Content-Range`;
+- `icy-name`;
+- `icy-description`;
+- `icy-genre`;
+- `icy-url`;
+- `icy-br`;
+- `icy-metaint`;
+- `ice-audio-info`.
+
+Redirects must be logged clearly, including the redirect count and the target URL. A maximum redirect count must be enforced. Redirect loops must be detected when practical.
+
+### Content-type and payload validation
+
+Do not rely on a filename extension alone. Validate both HTTP headers and the initial payload bytes. Detect suspicious responses such as:
+
+- HTML pages;
+- XML or JSON pages;
+- playlist URLs;
+- HLS or DASH manifests;
+- unsupported direct stream types.
+
+Recognize at least M3U, M3U8, PLS, XSPF, and ASX patterns and report them explicitly if the current player cannot handle them.
+
+The first payload bytes must be inspected carefully without destroying the original stream data. The pipeline must remain conceptually:
+
+```text
+network -> inspect/peek first bytes -> decoder receives those same bytes
+```
+
+### ICY, chunked transfer, and stream format diagnostics
+
+The project must log whether the stream uses ICY metadata, if `icy-metaint` is supplied, and whether the server returns legacy `ICY 200 OK` responses. If the HTTP layer cannot handle legacy ICY framing, that limitation must be reported clearly.
+
+The project must detect whether `Transfer-Encoding: chunked` is used and report invalid chunk framing explicitly when appropriate.
+
+The project must examine the first bytes of the payload to detect likely stream types such as:
+
+- MP3 (`FF FB`, `FF F3`, `FF F2`)
+- AAC ADTS (`FF F1`, `FF F9`)
+- Ogg (`OggS`)
+- FLAC (`fLaC`)
+- M3U (`#EXTM3U`)
+- PLS (`[playlist]`)
+- HTML (`<!DOCTYPE`, `<html`)
+
+### Decoder and stream lifecycle diagnostics
+
+Before selecting a decoder, log the decision inputs and the chosen decoder, including any mismatch or conflict between URL extension, `Content-Type`, and payload hint.
+
+On decoder startup, log initialization success or failure and any relevant decoder-specific errors. When available, log sample rate, channels, bit depth, and bitrate.
+
+When a read fails or a stream terminates, log the actual reason and distinguish between:
+
+- timeout;
+- clean EOF;
+- remote disconnect;
+- connection reset;
+- TLS close;
+- local cancellation;
+- decoder stop.
+
+At stream teardown, print a compact final summary including bytes received, uptime, last HTTP status, and last error.
+
+### Memory and stack diagnostics
+
+During station attempts, log free heap and minimum free heap usage before opening the stream, after HTTP/TLS setup, after decoder creation, after playback starts, and after teardown where practical.
+
+If the decoder or streaming task may get close to stack exhaustion, log stack high-water marks only at meaningful transition points rather than continuously.
+
+### Browser comparison checklist
+
+The debug output must help compare the ESP32 behavior against a normal browser, especially for:
+
+1. redirect handling;
+2. HTTPS redirects;
+3. modern TLS support;
+4. User-Agent behavior;
+5. Accept headers;
+6. compressed HTTP content;
+7. JavaScript-based web players;
+8. playlist resolution;
+9. cookies;
+10. website/player URLs versus direct streams;
+11. HLS;
+12. DASH;
+13. tolerance for malformed HTTP;
+14. automatic retry;
+15. IPv6 versus IPv4 fallback.
+
+Do not assume that a URL that works in a browser is necessarily a direct audio stream. If the station returns HTML instead of audio, log that clearly.
+
+### Validation constraints
+
+- Do not hide errors.
+- Do not silently guess.
+- Do not add workarounds before the actual failure mechanism is visible.
+- Do not rewrite the working player solely for debugging.
+- Keep the network fetch and decoder/I2S path separated.
+- Preserve current station functionality while adding observability.
+- Use `idf.py build` after each meaningful debugging change and verify that known working stations still work.
+
+## To Do List
+
+### Implemented / covered
+
+- [x] Add clear station-open banner and final stream summary.
+- [x] Log parsed URL details (scheme, host, port, path).
+- [x] Log DNS resolution and IPv4/IPv6 results.
+- [x] Log HTTP status, headers, and content-type detection.
+- [x] Add redirect detection and redirect target logging.
+- [x] Add retry logging without hiding original failure reasons.
+- [x] Add User-Agent and ICY metadata request logging.
+- [x] Detect HTML, playlist, and HLS/DASH-like payloads.
+- [x] Inspect first payload bytes for audio vs non-audio patterns.
+- [x] Log the fetch task and HTTP event flow for connection diagnostics.
+
+### Remaining / high-priority follow-up work
+
+- [ ] Add deeper TLS diagnostics with precise certificate and mbedTLS error reporting.
+- [ ] Add explicit comparison of HTTP-to-HTTPS and HTTPS-to-HTTP redirect behavior.
+- [ ] Add `Accept`/compression/cookie comparison logging where relevant.
+- [ ] Add a more complete teardown summary with heap, uptime, and last error history.
+- [ ] Add explicit malformed-HTTP / chunk-framing diagnostics for edge-case streams.
+- [ ] Add browser-vs-ESP32 comparison notes for HLS, DASH, and playlist resolution.
+- [ ] Add more complete validation for malformed station JSON entries and invalid URLs.
+- [ ] Verify at least one known working station and one known failing station against the completed diagnostic output.
+
+### Acceptance bar
+
+The implementation is complete only when the developer can select any station, read the ESP-IDF monitor log, and determine whether the failure is caused by a wrong URL, a website/player URL, redirect behavior, TLS, browser-specific headers, playlists, HLS/DASH, malformed HTTP, ICY incompatibility, or decoder issues without guessing.

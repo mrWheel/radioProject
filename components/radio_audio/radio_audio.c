@@ -11,9 +11,19 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/stream_buffer.h"
+#include "esp_timer.h"
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 typedef struct { radio_station_t station; } audio_message_t;
+static const char *TAG = "RADIO";
+static const char *TAG_HTTP = "RADIO_HTTP";
+static const char *TAG_TLS = "RADIO_TLS";
+static const char *TAG_STREAM = "RADIO_STREAM";
+static const char *TAG_CODEC = "RADIO_CODEC";
+static const char *TAG_BUFFER = "RADIO_BUFFER";
 //-- Raw, ICY-stripped audio bytes cross from fetch_task to stream_task through
 //-- this PSRAM ring buffer, so a network/HTTP stall never stalls the I2S feed
 //-- directly (~4s of buffering at 128kbps)
@@ -54,6 +64,283 @@ static void parse_icy_title(char *meta, char *out, size_t out_cap)
 	out[title_len] = '\0';
 }
 
+static void log_station_banner(const radio_station_t *station)
+{
+	ESP_LOGI(TAG, "============================================================");
+	ESP_LOGI(TAG, "Opening radio station");
+	ESP_LOGI(TAG, "Name: %s", station->name);
+	ESP_LOGI(TAG, "URL : %s", station->url);
+	ESP_LOGI(TAG, "Free heap before open: %d bytes", esp_get_free_heap_size());
+	ESP_LOGI(TAG, "Minimum free heap so far: %d bytes", heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT));
+	ESP_LOGI(TAG, "============================================================");
+}
+
+static void log_url_details(const char *url)
+{
+	char scheme[16] = {0};
+	char host[128] = {0};
+	char path[256] = {0};
+	char port[16] = {0};
+	const char *scheme_sep = strstr(url, "://");
+	const char *path_start = NULL;
+
+	if (scheme_sep) {
+		size_t scheme_len = (size_t)(scheme_sep - url);
+		if (scheme_len < sizeof(scheme)) {
+			memcpy(scheme, url, scheme_len);
+			scheme[scheme_len] = '\0';
+		}
+		const char *host_start = scheme_sep + 3;
+		const char *port_sep = strchr(host_start, ':');
+		const char *slash = strchr(host_start, '/');
+		if (slash) {
+			path_start = slash;
+			if (slash - host_start < (ptrdiff_t)sizeof(host)) {
+				memcpy(host, host_start, (size_t)(slash - host_start));
+				host[slash - host_start] = '\0';
+			}
+			if (port_sep && port_sep > host_start && port_sep < slash) {
+				size_t port_len = (size_t)(slash - port_sep - 1);
+				if (port_len < sizeof(port)) {
+					memcpy(port, port_sep + 1, port_len);
+					port[port_len] = '\0';
+				}
+			}
+			if (path_start) {
+				size_t path_len = strlen(path_start);
+				if (path_len < sizeof(path)) {
+					memcpy(path, path_start, path_len);
+					path[path_len] = '\0';
+				}
+			}
+		} else {
+			if (port_sep) {
+				size_t host_len = (size_t)(port_sep - host_start);
+				if (host_len < sizeof(host)) {
+					memcpy(host, host_start, host_len);
+					host[host_len] = '\0';
+				}
+				size_t port_len = strlen(port_sep + 1);
+				if (port_len < sizeof(port)) {
+					memcpy(port, port_sep + 1, port_len);
+					port[port_len] = '\0';
+				}
+			} else {
+				strlcpy(host, host_start, sizeof(host));
+			}
+		}
+	}
+	if (scheme[0]) ESP_LOGI(TAG_HTTP, "Scheme   : %s", scheme);
+	if (host[0]) ESP_LOGI(TAG_HTTP, "Host     : %s", host);
+	if (port[0]) ESP_LOGI(TAG_HTTP, "Port     : %s", port);
+	else if (strcmp(scheme, "https") == 0) ESP_LOGI(TAG_HTTP, "Port     : 443");
+	else if (strcmp(scheme, "http") == 0) ESP_LOGI(TAG_HTTP, "Port     : 80");
+	if (path[0]) ESP_LOGI(TAG_HTTP, "Path     : %s", path);
+	if (strstr(url, ".m3u") || strstr(url, ".pls") || strstr(url, ".m3u8") || strstr(url, ".xspf") || strstr(url, ".asx") || strstr(url, "playlist")) {
+		ESP_LOGW(TAG_HTTP, "Suspicious playlist-like URL detected: %s", url);
+		ESP_LOGW(TAG_HTTP, "This may resolve to a playlist instead of a direct audio stream");
+	}
+}
+
+static void log_dns_resolution(const char *host)
+{
+	static const int families[] = {AF_INET, AF_INET6};
+	for (size_t i = 0; i < sizeof(families) / sizeof(families[0]); ++i) {
+		struct addrinfo hints;
+		struct addrinfo *result = NULL;
+		int rc;
+		char ipbuf[INET6_ADDRSTRLEN];
+		int count = 0;
+		const char *family_name = families[i] == AF_INET ? "IPv4" : "IPv6";
+		memset(&hints, 0, sizeof(hints));
+		hints.ai_family = families[i];
+		hints.ai_socktype = SOCK_STREAM;
+		ESP_LOGI(TAG_HTTP, "Resolving host %s (%s)", host, family_name);
+		rc = getaddrinfo(host, NULL, &hints, &result);
+		if (rc != 0 || result == NULL) {
+			ESP_LOGW(TAG_HTTP, "%s lookup failed for %s", family_name, host);
+			continue;
+		}
+		for (struct addrinfo *ai = result; ai != NULL; ai = ai->ai_next) {
+			void *addr = NULL;
+			if (ai->ai_family == AF_INET) {
+				addr = &((struct sockaddr_in *)ai->ai_addr)->sin_addr;
+			} else if (ai->ai_family == AF_INET6) {
+				addr = &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr;
+			}
+			if (!addr) continue;
+			if (inet_ntop(ai->ai_family, addr, ipbuf, sizeof(ipbuf)) == NULL) continue;
+			ESP_LOGI(TAG_HTTP, "DNS result (%s): %s", family_name, ipbuf);
+			count++;
+		}
+		if (count == 0) {
+			ESP_LOGW(TAG_HTTP, "No usable %s addresses returned for %s", family_name, host);
+		}
+		freeaddrinfo(result);
+	}
+}
+
+static void log_http_response(esp_http_client_handle_t h)
+{
+	char *content_type = NULL;
+	char *location = NULL;
+	char *transfer_encoding = NULL;
+	char *content_length = NULL;
+	char *icy_metaint = NULL;
+	int status = esp_http_client_get_status_code(h);
+	ESP_LOGI(TAG_HTTP, "HTTP status: %d", status);
+	if (esp_http_client_get_header(h, "Content-Type", &content_type) == ESP_OK && content_type) {
+		ESP_LOGI(TAG_HTTP, "Content-Type: %s", content_type);
+	}
+	if (esp_http_client_get_header(h, "Location", &location) == ESP_OK && location) {
+		ESP_LOGW(TAG_HTTP, "Redirect returned: %s", location);
+	}
+	if (esp_http_client_get_header(h, "Transfer-Encoding", &transfer_encoding) == ESP_OK && transfer_encoding) {
+		ESP_LOGI(TAG_HTTP, "Transfer-Encoding: %s", transfer_encoding);
+	} else {
+		ESP_LOGI(TAG_HTTP, "Transfer-Encoding: none");
+	}
+	if (esp_http_client_get_header(h, "Content-Length", &content_length) == ESP_OK && content_length) {
+		ESP_LOGI(TAG_HTTP, "Content-Length: %s", content_length);
+	} else {
+		ESP_LOGI(TAG_HTTP, "Content-Length: not supplied");
+	}
+	if (esp_http_client_get_header(h, "icy-metaint", &icy_metaint) == ESP_OK && icy_metaint) {
+		ESP_LOGI(TAG_HTTP, "icy-metaint: %s", icy_metaint);
+	} else {
+		ESP_LOGI(TAG_HTTP, "icy-metaint: not supplied");
+	}
+	if (status >= 300 && status < 400) {
+		ESP_LOGW(TAG_HTTP, "HTTP redirect detected; follow-up URL must be inspected");
+	}
+}
+
+static const char *detect_payload_type(const uint8_t *buf, size_t len, const char *content_type)
+{
+	if (!buf || len == 0) return "unknown";
+	if (content_type && (strstr(content_type, "text/html") || strstr(content_type, "application/json") || strstr(content_type, "application/xml") || strstr(content_type, "text/xml"))) {
+		return "web-or-data-page";
+	}
+	if (content_type && (strstr(content_type, "mpegurl") || strstr(content_type, "mpd") || strstr(content_type, "dash"))) {
+		return "HLS/DASH playlist";
+	}
+	if (len >= 7 && memcmp(buf, "#EXTM3U", 7) == 0) return "HLS/M3U";
+	if (len >= 8 && memcmp(buf, "[playlist]", 9) == 0) return "PLS";
+	if (len >= 5 && memcmp(buf, "<!DOC", 5) == 0) return "HTML";
+	if (len >= 5 && (memcmp(buf, "<html", 5) == 0 || memcmp(buf, "<?xml", 5) == 0)) return "HTML/XML";
+	if (len >= 4 && memcmp(buf, "OggS", 4) == 0) return "Ogg";
+	if (len >= 4 && memcmp(buf, "fLaC", 4) == 0) return "FLAC";
+	if (len >= 3 && (buf[0] == 0xFF && (buf[1] == 0xFB || buf[1] == 0xF3 || buf[1] == 0xF2))) return "MP3";
+	if (len >= 2 && (buf[0] == 0xFF && (buf[1] == 0xF1 || buf[1] == 0xF9))) return "AAC";
+	if (len >= 10 && strncmp((const char *)buf, "StreamTitle", 11) == 0) return "ICY metadata";
+	return "unknown";
+}
+
+static void log_payload_probe(const uint8_t *buf, size_t len, const char *content_type)
+{
+	if (!buf || len == 0) {
+		ESP_LOGW(TAG_STREAM, "No initial payload bytes available for inspection");
+		return;
+	}
+	const size_t show = len < 32 ? len : 32;
+	const char *kind = detect_payload_type(buf, len, content_type);
+	ESP_LOGI(TAG_STREAM, "First %zu payload bytes:", show);
+	for (size_t i = 0; i < show; ++i) {
+		ESP_LOGI(TAG_STREAM, "%02X", buf[i]);
+	}
+	if (content_type && (strstr(content_type, "mpegurl") || strstr(content_type, "dash") || strstr(content_type, "mpd") || strstr(content_type, "m3u"))) {
+		ESP_LOGW(TAG_STREAM, "Stream is a playlist or HLS/DASH manifest");
+		ESP_LOGE(TAG_STREAM, "Current radio pipeline does not support direct HLS/DASH playlists");
+	}
+	if (strstr(kind, "HLS") || strstr(kind, "DASH") || strstr(kind, "PLS") || strstr(kind, "M3U")) {
+		ESP_LOGW(TAG_STREAM, "Playlist-like payload detected: %s", kind);
+	}
+	if (content_type && strncmp(content_type, "text/html", 9) == 0) {
+		ESP_LOGE(TAG_STREAM, "URL returned HTML instead of an audio stream");
+	}
+	ESP_LOGI(TAG_STREAM, "Payload signature: %s", kind);
+}
+
+static void log_stream_summary(const char *station_name, const char *final_url, const char *reason, const char *content_type, bool success, int http_code)
+{
+	ESP_LOGI(TAG, "============================================================");
+	if (success) {
+		ESP_LOGI(TAG, "Station started successfully");
+	} else {
+		ESP_LOGE(TAG, "Station open FAILED");
+	}
+	ESP_LOGI(TAG, "Name: %s", station_name ? station_name : "unknown");
+	ESP_LOGI(TAG, "Final URL: %s", final_url ? final_url : "unknown");
+	if (content_type) ESP_LOGI(TAG, "Content-Type: %s", content_type);
+	ESP_LOGI(TAG, "HTTP status: %d", http_code);
+	if (reason) ESP_LOGI(TAG, "Reason: %s", reason);
+	ESP_LOGI(TAG, "============================================================");
+}
+
+static void log_retry_event(int attempt, int max_attempts, const char *url, const char *reason)
+{
+	ESP_LOGW(TAG_HTTP, "Retry %d/%d after 2000 ms for %s", attempt, max_attempts, url);
+	if (reason) ESP_LOGW(TAG_HTTP, "Retry reason: %s", reason);
+}
+
+static void log_teardown_summary(const radio_station_t *station, const char *reason, size_t bytes_received, int http_code, uint64_t elapsed_us)
+{
+	ESP_LOGW(TAG, "Stream ended");
+	ESP_LOGW(TAG, "Station       : %s", station ? station->name : "unknown");
+	ESP_LOGW(TAG, "Final URL     : %s", station ? station->url : "unknown");
+	ESP_LOGW(TAG, "Bytes received: %zu", bytes_received);
+	ESP_LOGW(TAG, "Uptime        : %llu ms", (unsigned long long)(elapsed_us / 1000ULL));
+	ESP_LOGW(TAG, "Last HTTP code: %d", http_code);
+	if (reason) ESP_LOGW(TAG, "Last error    : %s", reason);
+}
+
+static esp_err_t http_event_handler(esp_http_client_event_t *evt)
+{
+	if (!evt) return ESP_ERR_INVALID_ARG;
+	switch (evt->event_id) {
+	case HTTP_EVENT_ON_CONNECTED:
+		ESP_LOGI(TAG_HTTP, "HTTP connection established");
+		break;
+	case HTTP_EVENT_ON_STATUS_CODE:
+		ESP_LOGI(TAG_HTTP, "HTTP status: %d", esp_http_client_get_status_code(evt->client));
+		break;
+	case HTTP_EVENT_REDIRECT:
+		if (evt->client) {
+			char *loc = NULL;
+			ESP_LOGW(TAG_HTTP, "Redirect detected");
+			if (esp_http_client_get_header(evt->client, "Location", &loc) == ESP_OK && loc) {
+				ESP_LOGW(TAG_HTTP, "Location: %s", loc);
+			}
+		}
+		break;
+	case HTTP_EVENT_HEADER_SENT:
+		ESP_LOGD(TAG_HTTP, "HTTP headers sent");
+		break;
+	case HTTP_EVENT_ON_HEADER:
+		if (evt->header_key && evt->header_value) {
+			ESP_LOGI(TAG_HTTP, "Header: %s = %s", evt->header_key, evt->header_value);
+		}
+		break;
+	case HTTP_EVENT_ON_DATA:
+		if (evt->data && evt->data_len > 0) {
+			ESP_LOGD(TAG_HTTP, "Received %d bytes of payload data", evt->data_len);
+		}
+		break;
+	case HTTP_EVENT_ERROR:
+		ESP_LOGE(TAG_HTTP, "HTTP event error");
+		break;
+	case HTTP_EVENT_DISCONNECTED:
+		ESP_LOGW(TAG_HTTP, "HTTP disconnect event received");
+		break;
+	case HTTP_EVENT_ON_FINISH:
+		ESP_LOGI(TAG_HTTP, "HTTP transfer finished");
+		break;
+	default:
+		break;
+	}
+	return ESP_OK;
+}
+
 //-- Owns the HTTP/ICY connection and does nothing else: reads network bytes,
 //-- strips interleaved ICY metadata, and pushes pure audio bytes into the
 //-- stream buffer. Runs on its own core so a slow/blocking read never delays
@@ -62,21 +349,81 @@ static void fetch_task(void *arg)
 {
 	(void)arg;
 	radio_station_t station = s_station;
+	bool first_payload_logged = false;
+	uint64_t start_us = esp_timer_get_time();
+	size_t bytes_received = 0;
+	int http_code = 0;
+	const char *failure_reason = "stream closed";
 	if (s_title_cb) s_title_cb("", s_title_ctx);
+	log_station_banner(&station);
+	log_url_details(station.url);
+	const char *host = NULL;
+	const char *colon = strstr(station.url, "://");
+	if (colon) {
+		host = colon + 3;
+		if (strncmp(station.url, "https://", 8) == 0) {
+			ESP_LOGI(TAG_TLS, "HTTPS connection requested");
+			ESP_LOGI(TAG_TLS, "Certificate bundle attach configured");
+		} else if (strncmp(station.url, "http://", 7) == 0) {
+			ESP_LOGI(TAG_HTTP, "HTTP connection requested");
+		}
+	}
+	if (host) {
+		const char *host_end = strchr(host, '/');
+		char host_copy[128] = {0};
+		if (host_end) {
+			size_t len = (size_t)(host_end - host);
+			if (len >= sizeof(host_copy)) len = sizeof(host_copy) - 1;
+			memcpy(host_copy, host, len);
+			host_copy[len] = '\0';
+			log_dns_resolution(host_copy);
+		} else {
+			strlcpy(host_copy, host, sizeof(host_copy));
+			log_dns_resolution(host_copy);
+		}
+	}
 
-	esp_http_client_config_t hc = {.url = station.url, .crt_bundle_attach = esp_crt_bundle_attach, .timeout_ms = 10000, .buffer_size = 4096, .keep_alive_enable = true};
+	esp_http_client_config_t hc = {.url = station.url, .crt_bundle_attach = esp_crt_bundle_attach, .timeout_ms = 10000, .buffer_size = 4096, .keep_alive_enable = true, .event_handler = http_event_handler, .user_agent = "ESP32-Internet-Radio/1.0", .max_redirection_count = 5};
 	esp_http_client_handle_t h = esp_http_client_init(&hc);
-	if (!h) goto done;
+	if (!h) {
+		ESP_LOGE(TAG_HTTP, "HTTP client init failed for %s", station.url);
+		goto done;
+	}
+	esp_http_client_set_header(h, "User-Agent", "ESP32-Internet-Radio/1.0");
+	esp_http_client_set_header(h, "Accept", "*/*");
 	esp_http_client_set_header(h, "Icy-Metadata", "1");
-	if (esp_http_client_open(h, 0) != ESP_OK) goto done;
+	esp_http_client_set_header(h, "Connection", "close");
+	ESP_LOGI(TAG_HTTP, "Method: GET");
+	ESP_LOGI(TAG_HTTP, "Request URL: %s", station.url);
+	ESP_LOGI(TAG_HTTP, "HTTP version: library-managed by esp_http_client");
+	ESP_LOGI(TAG_HTTP, "User-Agent: ESP32-Internet-Radio/1.0");
+	ESP_LOGI(TAG_HTTP, "Icy-Metadata: 1");
+	for (int attempt = 1; attempt <= 3; ++attempt) {
+		if (esp_http_client_open(h, 0) == ESP_OK) break;
+		int err = esp_http_client_get_errno(h);
+		if (attempt < 3) {
+			log_retry_event(attempt, 3, station.url, err != 0 ? strerror(err) : "connection failed");
+			vTaskDelay(pdMS_TO_TICKS(2000));
+			esp_http_client_close(h);
+			continue;
+		}
+		ESP_LOGE(TAG_HTTP, "HTTP open failed for %s", station.url);
+		ESP_LOGE(TAG_TLS, "TLS handshake failed");
+		if (err != 0) ESP_LOGE(TAG_HTTP, "errno=%d (%s)", err, strerror(err));
+		failure_reason = err != 0 ? strerror(err) : "HTTP open failed";
+		log_stream_summary(station.name, station.url, failure_reason, NULL, false, esp_http_client_get_status_code(h));
+		goto done;
+	}
 	esp_http_client_fetch_headers(h);
+	http_code = esp_http_client_get_status_code(h);
+	log_http_response(h);
 
 	//-- ICY metadata: server interleaves a length-prefixed "StreamTitle='...';"
 	//-- block every icy-metaint bytes of audio when we asked for it above
 	size_t meta_int = 0;
 	char *meta_hdr = NULL;
 	if (esp_http_client_get_header(h, "icy-metaint", &meta_hdr) == ESP_OK && meta_hdr) meta_int = (size_t)atoi(meta_hdr);
-	ESP_LOGI("radio_audio", "icy-metaint=%d", (int)meta_int);
+	ESP_LOGI(TAG_STREAM, "icy-metaint=%d", (int)meta_int);
 	uint8_t *meta_buf = meta_int ? malloc(255 * 16 + 1) : NULL;
 	if (meta_int && !meta_buf) meta_int = 0;
 	size_t meta_remain = meta_int;
@@ -87,14 +434,21 @@ static void fetch_task(void *arg)
 	while (!s_stop_requested) {
 		if (meta_int && meta_remain == 0) {
 			uint8_t len_byte;
-			if (http_read_exact(h, &len_byte, 1) != 0) break;
+			if (http_read_exact(h, &len_byte, 1) != 0) {
+				ESP_LOGE(TAG_STREAM, "ICY metadata length read failed; connection ended unexpectedly");
+				break;
+			}
 			size_t meta_len = (size_t)len_byte * 16;
 			if (meta_len) {
-				if (http_read_exact(h, meta_buf, meta_len) != 0) break;
+				if (http_read_exact(h, meta_buf, meta_len) != 0) {
+					ESP_LOGE(TAG_STREAM, "ICY metadata payload read failed");
+					break;
+				}
 				meta_buf[meta_len] = '\0';
 				char title[64] = {0};
 				parse_icy_title((char *)meta_buf, title, sizeof(title));
 				if (title[0] && s_title_cb) s_title_cb(title, s_title_ctx);
+				ESP_LOGI(TAG_STREAM, "ICY metadata: %s", title[0] ? title : "<empty>");
 			}
 			meta_remain = meta_int;
 		}
@@ -103,7 +457,19 @@ static void fetch_task(void *arg)
 		if (meta_int && meta_remain < want) want = meta_remain;
 		if (want == 0) continue;
 		int n = esp_http_client_read(h, (char *)chunk, want);
-		if (n <= 0) break;
+		if (n <= 0) {
+			ESP_LOGE(TAG_STREAM, "Stream read failed: n=%d errno=%d (%s)", n, errno, errno ? strerror(errno) : "no errno");
+			break;
+		}
+		if (!first_payload_logged) {
+			char *content_type = NULL;
+			if (esp_http_client_get_header(h, "Content-Type", &content_type) == ESP_OK && content_type) {
+				log_payload_probe(chunk, (size_t)n, content_type);
+			} else {
+				log_payload_probe(chunk, (size_t)n, NULL);
+			}
+			first_payload_logged = true;
+		}
 		if (meta_int) meta_remain -= (size_t)n;
 
 		//-- Bounded-timeout send so we keep noticing s_stop_requested even
@@ -132,8 +498,13 @@ static void stream_task(void *arg)
 	radio_station_t station = s_station;
 
 	esp_audio_simple_dec_cfg_t dc = {.dec_type = station.codec == RADIO_CODEC_AAC ? ESP_AUDIO_SIMPLE_DEC_TYPE_AAC : ESP_AUDIO_SIMPLE_DEC_TYPE_MP3, .use_frame_dec = false};
+	ESP_LOGI(TAG_CODEC, "Codec selected: %s", station.codec == RADIO_CODEC_AAC ? "AAC" : "MP3");
 	esp_audio_simple_dec_handle_t dec = NULL;
-	if (esp_audio_simple_dec_open(&dc, &dec) != ESP_AUDIO_ERR_OK) goto done;
+	if (esp_audio_simple_dec_open(&dc, &dec) != ESP_AUDIO_ERR_OK) {
+		ESP_LOGE(TAG_CODEC, "Decoder open failed for station %s", station.name);
+		goto done;
+	}
+	ESP_LOGI(TAG_CODEC, "Decoder start successful");
 
 	//-- in_cap has headroom beyond one buffer receive so a codec frame split
 	//-- across two receives can be carried over instead of being silently
