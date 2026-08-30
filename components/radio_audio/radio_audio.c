@@ -472,10 +472,19 @@ static void fetch_task(void *arg)
 		}
 		if (meta_int) meta_remain -= (size_t)n;
 
-		//-- Bounded-timeout send so we keep noticing s_stop_requested even
-		//-- while the (4s-deep) buffer is full
+		//-- Avoid blocking on a full buffer while a station switch is tearing
+		//-- down the old stream: a waited send can leave xTaskWaitingToSend
+		//-- set while the buffer is reset, which triggers the assert seen in
+		//-- production. Poll with a zero timeout and retry briefly instead.
 		size_t sent = 0;
-		while (sent < (size_t)n && !s_stop_requested) sent += xStreamBufferSend(s_sb, chunk + sent, (size_t)n - sent, pdMS_TO_TICKS(100));
+		while (sent < (size_t)n && !s_stop_requested) {
+			size_t written = xStreamBufferSend(s_sb, chunk + sent, (size_t)n - sent, 0);
+			if (written == 0) {
+				vTaskDelay(pdMS_TO_TICKS(5));
+				continue;
+			}
+			sent += written;
+		}
 	}
 	free(chunk);
 	free(meta_buf);

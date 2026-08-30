@@ -13,6 +13,8 @@ Build and maintain a production-oriented VS Code ESP-IDF internet-radio firmware
 7. Support direct HTTP/HTTPS MP3 and AAC streams. Feed decoded 16-bit PCM to the PCM5102A over I2S and apply bounded software volume.
 8. Embed the initial LittleFS content in the normal build/flash workflow using a custom partition table. Active default is 4 MB (`partitions/radio_4mb.csv`); an 8 MB variant (`partitions/radio_8mb.csv`) is available for boards with more flash.
 9. Decouple network fetch from decoding/I2S with a buffer between them (messaging), so the `Internet->I2S` path is the most important path and is never interrupted by network stalls.
+10. Include a native embedded web UI for station browsing and basic controls. This is part of the project itself and must not depend on a separate design document such as `addWebServer.md` as the source of truth for implementation details. The implementation must fit the ESP-IDF firmware architecture and preserve the audio pipeline.
+11. WebSocket support is not a required baseline for this project yet. We have had difficulty implementing reliable WebSockets in the current ESP-IDF/HTTP server setup and that area still needs further investigation before it is considered a valid project dependency or contract. Until that is resolved, the project should use the supported native ESP-IDF HTTP server pattern that matches the actual target stack and current codebase.
 
 ## Hardware defaults
 
