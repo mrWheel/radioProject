@@ -1,6 +1,6 @@
 # ESP32-S3 Internet Radio
 
-Native ESP-IDF 5.2+ project for VS Code, the TFT-LCD-Display-EC11 piggyback board and a PCM5102A I2S DAC. It uses MichMich's captive-portal Wi-Fi provisioner, mrWheel's FTP server, LittleFS station storage and Espressif's MP3/AAC decoder.
+Native ESP-IDF 5.2+ project for VS Code, the TFT-LCD-Display-EC11 piggyback board and a PCM5102A I2S DAC. It uses MichMich's captive-portal Wi-Fi provisioner, LittleFS station storage and Espressif's MP3/AAC decoder.
 
 ## Included behavior
 
@@ -10,7 +10,7 @@ Native ESP-IDF 5.2+ project for VS Code, the TFT-LCD-Display-EC11 piggyback boar
 - Press EN-push to start the highlighted station and return to Volume.
 - After 20 seconds without rotation, selection is cancelled and Volume returns.
 - GPIO 1 is a reserved, debounced auxiliary button; it currently only logs an event.
-- `stations.json` is uploaded in the LittleFS image and can later be replaced over FTP.
+- `stations.json` is uploaded in the LittleFS image.
 
 ## Prerequisites
 
@@ -31,7 +31,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 The build uses the custom 4 MB partition table and automatically creates and flashes the `storage` LittleFS partition from `littlefs/`.
 
-On first boot, connect to the `Internet-Radio-Setup` access point. The captive portal stores Wi-Fi credentials in NVS. After connection, FTP is available on port 21, rooted at `/littlefs`. FTP is unencrypted and unauthenticated: use it only on a trusted LAN.
+On first boot, connect to the `Internet-Radio-Setup` access point. The captive portal stores Wi-Fi credentials in NVS.
 
 ## Edit stations
 
@@ -41,7 +41,7 @@ On first boot, connect to the `Internet-Radio-Setup` access point. The captive p
 {"version":1,"stations":[{"name":"Example","url":"https://example.net/live.mp3","codec":"mp3"}]}
 ```
 
-Supported codec values are `mp3` and `aac`. Plain HTTP and HTTPS URLs work; TLS uses ESP-IDF's certificate bundle. After changing the file over FTP, reboot to reload it.
+Supported codec values are `mp3` and `aac`. Plain HTTP and HTTPS URLs work; TLS uses ESP-IDF's certificate bundle. Rebuild and flash the LittleFS image after changing the file.
 
 ## Hardware defaults
 
@@ -61,7 +61,6 @@ Change them under `idf.py menuconfig` → **Component config → TFT LCD Display
 - `radio_input`: EC11 rotation/button events from the piggyback component, dispatched to the UI task
 - `radio_display`: renders the Volume/Selection/Status screens through mrWheel's `esp32_s3_piggyback` component (never drives the ST7789/EC11 hardware directly)
 - `radio_audio`: HTTP(S) fetch and the Espressif MP3/AAC decoder → I2S output, split across two tasks (see below)
-- `ftp_service`: exposes the mounted LittleFS through mrWheel's `ftp_server`
 - `main`: application state machine and the exact 20-second rule
 
 Station names and mode changes are also printed to the serial monitor. The compact native display renderer uses distinct Volume/Selection screens without pulling in a large GUI framework.
