@@ -1,4 +1,4 @@
-const state = { stationIndex: 0, stationCount: 0, volume: 0, artist: '-', track: '-', playing: false, streamConnected: false, station: null };
+const state = { stationIndex: 0, stationCount: 0, volume: 0, line1: '-', line2: '-', line3: '-', playing: false, streamConnected: false, station: null };
 let ws = null;
 let wsReady = false;
 let manageMode = 'view';
@@ -37,12 +37,15 @@ function applyState(data) {
   state.streamConnected = !!data.streamConnected;
   state.station = data.station || null;
   if (state.station && state.station.name) document.getElementById('stationName').textContent = state.station.name;
-  state.artist = data.artist ?? state.artist;
-  state.track = data.track ?? state.track;
-  const artistEl = document.getElementById('artist');
-  if (artistEl.textContent !== state.artist) artistEl.textContent = state.artist;
-  const trackEl = document.getElementById('track');
-  if (trackEl.textContent !== state.track) trackEl.textContent = state.track;
+  state.line1 = data.line1 ?? state.line1;
+  state.line2 = data.line2 ?? state.line2;
+  state.line3 = data.line3 ?? state.line3;
+  const line1El = document.getElementById('line1');
+  if (line1El.textContent !== state.line1) line1El.textContent = state.line1;
+  const line2El = document.getElementById('line2');
+  if (line2El.textContent !== state.line2) line2El.textContent = state.line2;
+  const line3El = document.getElementById('line3');
+  if (line3El.textContent !== state.line3) line3El.textContent = state.line3;
   const slider = document.getElementById('volumeSlider');
   slider.value = String(state.volume);
   document.getElementById('volumeValue').textContent = state.volume + '%';

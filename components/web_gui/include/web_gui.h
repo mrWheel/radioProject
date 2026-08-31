@@ -11,7 +11,7 @@ typedef void (*web_gui_state_applied_cb_t)(size_t station_index, int volume, voi
 
 esp_err_t web_gui_init(void);
 void web_gui_deinit(void);
-void web_gui_notify_title(const char *artist, const char *track);
+void web_gui_notify_title(const char *line1, const char *line2, const char *line3);
 
 //-- Called by app_main whenever the physical EC11/display path changes the
 //-- playing station or volume, so connected web GUI clients stay in sync.

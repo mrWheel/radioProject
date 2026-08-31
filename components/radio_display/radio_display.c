@@ -22,8 +22,9 @@ typedef struct {
 	char station[RADIO_NAME_MAX];
 	size_t selected;
 	char status[DISPLAY_STATUS_MAX];
-	char artist[DISPLAY_TITLE_MAX];
-	char track[DISPLAY_TITLE_MAX];
+	char line1[DISPLAY_TITLE_MAX];
+	char line2[DISPLAY_TITLE_MAX];
+	char line3[DISPLAY_TITLE_MAX];
 } display_message_t;
 
 static QueueHandle_t s_queue;
@@ -35,8 +36,9 @@ static QueueHandle_t s_queue;
 static display_mode_t s_current_mode = DISPLAY_MODE_STATUS;
 static int s_cached_volume;
 static char s_cached_station[RADIO_NAME_MAX];
-static char s_cached_artist[DISPLAY_TITLE_MAX];
-static char s_cached_track[DISPLAY_TITLE_MAX];
+static char s_cached_line1[DISPLAY_TITLE_MAX];
+static char s_cached_line2[DISPLAY_TITLE_MAX];
+static char s_cached_line3[DISPLAY_TITLE_MAX];
 
 //-- Windowed-list redraw cache: SIZE_MAX means "not drawn yet", forcing a
 //-- full redraw the first time the Select-Station screen is shown
@@ -109,15 +111,16 @@ static void draw_now_playing_line(uint16_t width, int y, int scale, const char *
 	tft_ec11_draw_text(x, y, len, text);
 }
 
-//-- Always draws (even for "-") so a track that disappears (station with no
+//-- Always draws (even for "-") so a line that disappears (station with no
 //-- metadata) clears instead of leaving stale text behind
-static void draw_now_playing(uint16_t width, const char *artist, const char *track)
+static void draw_now_playing(uint16_t width, const char *line1, const char *line2, const char *line3)
 {
-	draw_now_playing_line(width, 124, 2, artist ? artist : "-");
-	draw_now_playing_line(width, 144, 2, track ? track : "-");
+	draw_now_playing_line(width, 124, 2, line1 ? line1 : "-");
+	draw_now_playing_line(width, 144, 2, line2 ? line2 : "-");
+	draw_now_playing_line(width, 164, 2, line3 ? line3 : "-");
 }
 
-static void draw_volume_full(int volume, const char *station, const char *artist, const char *track)
+static void draw_volume_full(int volume, const char *station, const char *line1, const char *line2, const char *line3)
 {
 	uint16_t width = tft_ec11_width();
 
@@ -131,7 +134,7 @@ static void draw_volume_full(int volume, const char *station, const char *artist
 
 	draw_volume_percent(width, volume);
 	draw_volume_bar(width, volume);
-	draw_now_playing(width, artist, track);
+	draw_now_playing(width, line1, line2, line3);
 
 	draw_hint("Push4Station");
 }
@@ -275,7 +278,7 @@ static void display_task(void *argument)
 			s_cached_volume = message.volume;
 			snprintf(s_cached_station, sizeof(s_cached_station), "%s", message.station);
 			if (entering || station_changed) {
-				draw_volume_full(s_cached_volume, s_cached_station, s_cached_artist, s_cached_track);
+				draw_volume_full(s_cached_volume, s_cached_station, s_cached_line1, s_cached_line2, s_cached_line3);
 			} else {
 				uint16_t width = tft_ec11_width();
 				draw_volume_percent(width, s_cached_volume);
@@ -284,11 +287,14 @@ static void display_task(void *argument)
 			break;
 		}
 		case DISPLAY_MODE_TITLE: {
-			bool changed = strcmp(s_cached_artist, message.artist) != 0 || strcmp(s_cached_track, message.track) != 0;
-			snprintf(s_cached_artist, sizeof(s_cached_artist), "%s", message.artist);
-			snprintf(s_cached_track, sizeof(s_cached_track), "%s", message.track);
+			bool changed = strcmp(s_cached_line1, message.line1) != 0 ||
+				strcmp(s_cached_line2, message.line2) != 0 ||
+				strcmp(s_cached_line3, message.line3) != 0;
+			snprintf(s_cached_line1, sizeof(s_cached_line1), "%s", message.line1);
+			snprintf(s_cached_line2, sizeof(s_cached_line2), "%s", message.line2);
+			snprintf(s_cached_line3, sizeof(s_cached_line3), "%s", message.line3);
 			if (changed && s_current_mode == DISPLAY_MODE_VOLUME) {
-				draw_now_playing(tft_ec11_width(), s_cached_artist, s_cached_track);
+				draw_now_playing(tft_ec11_width(), s_cached_line1, s_cached_line2, s_cached_line3);
 			}
 			break;
 		}
@@ -324,12 +330,23 @@ void radio_display_volume(int volume, const char *station)
 	if (s_queue) (void)xQueueSend(s_queue, &message, 0);
 }
 
-void radio_display_now_playing(const char *artist, const char *track)
+void radio_display_now_playing(const char *line1, const char *line2, const char *line3)
 {
 	display_message_t message = {.mode = DISPLAY_MODE_TITLE};
-	if (artist) snprintf(message.artist, sizeof(message.artist), "%s", artist);
-	if (track) snprintf(message.track, sizeof(message.track), "%s", track);
+	if (line1) snprintf(message.line1, sizeof(message.line1), "%s", line1);
+	if (line2) snprintf(message.line2, sizeof(message.line2), "%s", line2);
+	if (line3) snprintf(message.line3, sizeof(message.line3), "%s", line3);
 	if (s_queue) (void)xQueueSend(s_queue, &message, 0);
+}
+
+//-- Same width/scale used by draw_now_playing_line(), exposed so
+//-- main/app_main.c can pre-wrap ICY text to the exact line budget instead
+//-- of duplicating this formula.
+size_t radio_display_title_max_chars(void)
+{
+	uint16_t width = tft_ec11_width();
+	int scale = 2;
+	return (size_t)((width - 8) / (6 * scale));
 }
 
 void radio_display_station_list(size_t selected)

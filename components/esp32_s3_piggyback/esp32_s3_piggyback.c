@@ -12,7 +12,7 @@
 #include "freertos/semphr.h"
 #include "sdkconfig.h"
 
-uint8_t tft_ec11_font_row(char c, uint8_t row);
+uint8_t tft_ec11_font_row(unsigned char c, uint8_t row);
 
 static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_panel_handle_t s_panel;
@@ -121,14 +121,67 @@ esp_err_t tft_ec11_clear(void){return draw_pixels(0,0,s_w,s_h,s_bg);}
 esp_err_t tft_ec11_fill_rect(int x,int y,int w,int h,uint16_t c){return draw_pixels(x,y,w,h,c);}
 esp_err_t tft_ec11_refresh(const uint16_t *fb){ if(!s_panel||!fb)return ESP_ERR_INVALID_ARG; const int rows=16;if(!s_transfer)s_transfer=heap_caps_malloc(320*rows*2,MALLOC_CAP_DMA);if(!s_transfer)return ESP_ERR_NO_MEM;for(int y=0;y<s_h;y+=rows){int n=(s_h-y>rows)?rows:s_h-y;for(int i=0;i<s_w*n;i++){uint16_t p=fb[(size_t)y*s_w+i];s_transfer[i]=(p>>8)|(p<<8);}esp_err_t e=esp_lcd_panel_draw_bitmap(s_panel,0,y,s_w,y+n,s_transfer);if(e!=ESP_OK)return e;if(xSemaphoreTake(s_transfer_done,pdMS_TO_TICKS(1000))!=pdTRUE)return ESP_ERR_TIMEOUT;}return ESP_OK; }
 
+//-- Decode one character from UTF-8 text into the byte value used by
+//-- tft_ec11_font_row(). Accented Latin-1 letters (e.g. 'a' with an accent)
+//-- are encoded in UTF-8 as a 2-byte sequence (lead byte 0xC2/0xC3); those
+//-- are combined into their Latin-1 code point so the font can fold them
+//-- onto the unaccented base letter. Anything else is passed through as a
+//-- single raw byte.
+static unsigned char decode_next_character(const char *text, size_t *byte_index)
+{
+    unsigned char lead = (unsigned char)text[*byte_index];
+    if (lead < 0x80)
+    {
+        (*byte_index)++;
+        return lead;
+    }
+    if ((lead == 0xC2 || lead == 0xC3) && text[*byte_index + 1] != '\0')
+    {
+        unsigned char continuation = (unsigned char)text[*byte_index + 1];
+        unsigned char code_point = (unsigned char)(((lead & 0x1F) << 6) | (continuation & 0x3F));
+        (*byte_index) += 2;
+        return code_point;
+    }
+    (*byte_index)++;
+    return lead;
+}
+
+//-- Number of glyphs (not raw bytes) that decode_next_character() will
+//-- produce for this text, used so the cleared/redrawn width matches what
+//-- is actually rendered when the text contains multi-byte UTF-8 characters.
+static size_t count_utf8_characters(const char *text)
+{
+    size_t byte_index = 0, count = 0;
+    while (text[byte_index] != '\0')
+    {
+        decode_next_character(text, &byte_index);
+        count++;
+    }
+    return count;
+}
+
 static esp_err_t draw_text_with_style(int x, int y, size_t slots, const char *text,
                                       uint16_t background, uint8_t font_scale,
                                       uint16_t foreground)
 {
     if(!text||!slots||!font_scale)return ESP_ERR_INVALID_ARG;
     int cw=6*font_scale,ch=8*font_scale; ESP_RETURN_ON_ERROR(draw_pixels(x,y,(int)slots*cw,ch,background),TAG,"text clear");
-    size_t len=strlen(text); if(len>slots)len=slots;
-    for(size_t i=0;i<len;i++) for(int row=0;row<7;row++){uint8_t bits=tft_ec11_font_row(text[i],row); for(int col=0;col<5;col++) if(bits&(1<<(4-col))) draw_pixels(x+(int)i*cw+col*font_scale,y+row*font_scale,font_scale,font_scale,foreground);}
+    size_t byte_index = 0, glyph_index = 0;
+    while (text[byte_index] != '\0' && glyph_index < slots)
+    {
+        unsigned char character = decode_next_character(text, &byte_index);
+        //-- Row 7 is only used by lowercase descenders (g/j/p/q/y); every
+        //-- other glyph returns 0 for it, so this stays within the existing
+        //-- 8-row-tall cell (ch=8*font_scale) with no layout change.
+        for (int row = 0; row < 8; row++)
+        {
+            uint8_t bits = tft_ec11_font_row(character, row);
+            for (int col = 0; col < 5; col++)
+                if (bits & (1 << (4 - col)))
+                    draw_pixels(x + (int)glyph_index * cw + col * font_scale, y + row * font_scale, font_scale, font_scale, foreground);
+        }
+        glyph_index++;
+    }
     return ESP_OK;
 }
 
@@ -137,7 +190,7 @@ esp_err_t tft_ec11_draw_text_simple(int x, int y, const char *text)
     if (!text) {
         return ESP_ERR_INVALID_ARG;
     }
-    return draw_text_with_style(x, y, strlen(text), text, s_bg, s_scale, s_fg);
+    return draw_text_with_style(x, y, count_utf8_characters(text), text, s_bg, s_scale, s_fg);
 }
 
 esp_err_t tft_ec11_draw_text_styled(int x, int y, const char *text, uint16_t background,
@@ -146,7 +199,7 @@ esp_err_t tft_ec11_draw_text_styled(int x, int y, const char *text, uint16_t bac
     if (!text) {
         return ESP_ERR_INVALID_ARG;
     }
-    return draw_text_with_style(x, y, strlen(text), text, background, font_scale, foreground);
+    return draw_text_with_style(x, y, count_utf8_characters(text), text, background, font_scale, foreground);
 }
 
 esp_err_t tft_ec11_draw_text(int x, int y, size_t slots, const char *text)

@@ -20,8 +20,9 @@
 static const char *TAG = "WEB_GUI";
 static httpd_handle_t s_server = NULL;
 static size_t s_current_station_index = 0;
-static char s_current_artist[160] = "";
-static char s_current_track[160] = "";
+static char s_current_line1[160] = "";
+static char s_current_line2[160] = "";
+static char s_current_line3[160] = "";
 static QueueHandle_t s_ws_queue = NULL;
 static TaskHandle_t s_ws_worker_task = NULL;
 static web_gui_state_applied_cb_t s_state_applied_cb = NULL;
@@ -102,8 +103,9 @@ static void web_gui_fill_state(cJSON *data)
     cJSON_AddNumberToObject(data, "volume", (double)radio_audio_get_volume());
     cJSON_AddBoolToObject(data, "playing", station_count > 0 && !radio_audio_is_paused());
     cJSON_AddBoolToObject(data, "streamConnected", true);
-    cJSON_AddStringToObject(data, "artist", s_current_artist);
-    cJSON_AddStringToObject(data, "track", s_current_track);
+    cJSON_AddStringToObject(data, "line1", s_current_line1);
+    cJSON_AddStringToObject(data, "line2", s_current_line2);
+    cJSON_AddStringToObject(data, "line3", s_current_line3);
 
     const radio_station_t *station = station_store_get(station_index);
     if (station) {
@@ -565,12 +567,14 @@ esp_err_t web_gui_init(void)
     return ESP_OK;
 }
 
-void web_gui_notify_title(const char *artist, const char *track)
+void web_gui_notify_title(const char *line1, const char *line2, const char *line3)
 {
-    bool changed = strcmp(s_current_artist, artist ? artist : "") != 0 ||
-                   strcmp(s_current_track, track ? track : "") != 0;
-    strlcpy(s_current_artist, artist ? artist : "", sizeof(s_current_artist));
-    strlcpy(s_current_track, track ? track : "", sizeof(s_current_track));
+    bool changed = strcmp(s_current_line1, line1 ? line1 : "") != 0 ||
+                   strcmp(s_current_line2, line2 ? line2 : "") != 0 ||
+                   strcmp(s_current_line3, line3 ? line3 : "") != 0;
+    strlcpy(s_current_line1, line1 ? line1 : "", sizeof(s_current_line1));
+    strlcpy(s_current_line2, line2 ? line2 : "", sizeof(s_current_line2));
+    strlcpy(s_current_line3, line3 ? line3 : "", sizeof(s_current_line3));
     if (!changed || !s_server) {
         return;
     }

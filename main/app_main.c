@@ -24,30 +24,131 @@ typedef struct {ui_mode_t mode;int volume;size_t playing;size_t selected;TickTyp
 static QueueHandle_t s_events; static app_state_t s={.mode=UI_VOLUME,.volume=CONFIG_RADIO_DEFAULT_VOLUME};
 static void input_cb(radio_input_event_t e,void*ctx){(void)ctx;xQueueSend(s_events,&e,0);}
 
-//-- ICY "StreamTitle" is conventionally "Artist - Track"; split it once here so
-//-- neither the display nor the web GUI has to re-decide the "-" fallback rule.
-static void split_icy_title(const char *raw, char *artist, size_t artist_sz, char *track, size_t track_sz)
+//-- ICY "StreamTitle" often packs multiple fields (artist/track/album/station)
+//-- into one string separated by "<space>TOKEN<space>" tokens; recognized
+//-- tokens are checked left-to-right and the earliest match wins. Add more
+//-- tokens here as new stations turn up.
+static const char *k_icy_separators[] = {
+	" - ", " | ", " / ", " ~ ", " :: ", " – ", " — ", " • ", " · "
+};
+
+static const char *find_icy_separator(const char *text, size_t *match_len)
 {
-	const char *sep = raw ? strstr(raw, " - ") : NULL;
-	if (sep) {
-		size_t artist_len = (size_t)(sep - raw);
-		if (artist_len >= artist_sz) artist_len = artist_sz - 1;
-		memcpy(artist, raw, artist_len);
-		artist[artist_len] = '\0';
-		snprintf(track, track_sz, "%s", sep + 3);
-	} else {
-		artist[0] = '\0';
-		snprintf(track, track_sz, "%s", raw ? raw : "");
+	const char *best = NULL;
+	size_t best_len = 0;
+	for (size_t i = 0; i < sizeof(k_icy_separators) / sizeof(k_icy_separators[0]); i++) {
+		const char *hit = strstr(text, k_icy_separators[i]);
+		if (hit && (!best || hit < best)) {
+			best = hit;
+			best_len = strlen(k_icy_separators[i]);
+		}
 	}
-	if (!artist[0]) snprintf(artist, artist_sz, "-");
-	if (!track[0]) snprintf(track, track_sz, "-");
+	if (match_len) *match_len = best_len;
+	return best;
+}
+
+//-- Splits `raw` into at most 3 segments (pointer+length into `raw`, no copy)
+//-- at the first 2 separator matches; any further separators stay embedded as
+//-- literal text in the 3rd segment instead of being lost. Empty segments
+//-- (e.g. a leading " - Track") are dropped so they don't waste a line.
+static size_t split_icy_segments(const char *raw, const char *seg_start[3], size_t seg_len[3])
+{
+	size_t count = 0;
+	const char *cursor = raw;
+	while (count < 2) {
+		size_t match_len;
+		const char *sep = find_icy_separator(cursor, &match_len);
+		if (!sep) break;
+		seg_start[count] = cursor;
+		seg_len[count] = (size_t)(sep - cursor);
+		count++;
+		cursor = sep + match_len;
+	}
+	seg_start[count] = cursor;
+	seg_len[count] = strlen(cursor);
+	count++;
+
+	size_t kept = 0;
+	for (size_t i = 0; i < count; i++) {
+		if (seg_len[i] == 0) continue;
+		seg_start[kept] = seg_start[i];
+		seg_len[kept] = seg_len[i];
+		kept++;
+	}
+	return kept;
+}
+
+//-- Greedy single-space word-wrap of one segment into at most `max_lines`
+//-- lines of at most `max_chars` characters, breaking on the last space that
+//-- keeps a line within budget (hard-cut if a single word is wider than
+//-- `max_chars`). Writes into lines_out[*out_count..] and advances
+//-- *out_count; text left over once `max_lines` is used up is dropped, since
+//-- 3 lines is the hard budget.
+static void emit_wrapped(const char *text, size_t len, size_t max_chars, char lines_out[][160], int *out_count, int max_lines)
+{
+	size_t pos = 0;
+	for (int produced = 0; produced < max_lines && pos < len; produced++) {
+		size_t remaining = len - pos;
+		size_t take = remaining;
+		if (take > max_chars) {
+			take = max_chars;
+			size_t brk = take;
+			while (brk > 0 && text[pos + brk] != ' ') brk--;
+			if (brk > 0) take = brk;
+			//-- Never hard-cut inside a multi-byte UTF-8 character (e.g. an
+			//-- accented letter like "e" in "arabo-egyptienne"): back off
+			//-- over any continuation bytes (0x80-0xBF) at the cut point.
+			while (take > 0 && ((unsigned char)text[pos + take] & 0xC0) == 0x80) take--;
+		}
+		char *dst = lines_out[*out_count];
+		memcpy(dst, text + pos, take);
+		dst[take] = '\0';
+		(*out_count)++;
+		pos += take;
+		while (pos < len && text[pos] == ' ') pos++;
+	}
+}
+
+//-- Splits ICY metadata into up to 3 display-ready lines, once here, so
+//-- neither the display nor the web GUI has to re-decide it (they always end
+//-- up showing the same 3 lines). Separators come first (split_icy_segments);
+//-- segments are then laid out strictly left-to-right, each one taking as
+//-- many of the remaining lines as it needs (word-wrapped on single spaces
+//-- if it's wider than the display) before the next segment gets a turn. So
+//-- the leftmost, most important segment is never sacrificed to make room for
+//-- a later one; a later segment (or the tail of one) that no longer fits in
+//-- the 3-line budget is simply dropped. Unused trailing lines fall back to "-".
+static void build_icy_lines(const char *raw, char line1[160], char line2[160], char line3[160])
+{
+	char lines_out[3][160];
+	int out_count = 0;
+	size_t max_chars = radio_display_title_max_chars();
+	if (max_chars == 0 || max_chars >= sizeof(lines_out[0])) max_chars = sizeof(lines_out[0]) - 1;
+
+	const char *seg_start[3];
+	size_t seg_len[3];
+	size_t seg_count = split_icy_segments(raw ? raw : "", seg_start, seg_len);
+
+	for (size_t i = 0; i < seg_count && out_count < 3; i++) {
+		int budget = 3 - out_count;
+		emit_wrapped(seg_start[i], seg_len[i], max_chars, lines_out, &out_count, budget);
+	}
+	while (out_count < 3) {
+		snprintf(lines_out[out_count], sizeof(lines_out[out_count]), "-");
+		out_count++;
+	}
+
+	snprintf(line1, 160, "%s", lines_out[0]);
+	snprintf(line2, 160, "%s", lines_out[1]);
+	snprintf(line3, 160, "%s", lines_out[2]);
 }
 
 //-- Last real (non-empty) title split, kept up to date even while muted so the
 //-- very first StreamTitle of a station isn't lost: it can arrive from
 //-- fetch_task() before radio_audio finishes its decode warm-up and unmutes.
-static char s_last_artist[160] = "-";
-static char s_last_track[160] = "-";
+static char s_last_line1[160] = "-";
+static char s_last_line2[160] = "-";
+static char s_last_line3[160] = "-";
 
 static void title_cb(const char *title, void *ctx)
 {
@@ -55,16 +156,17 @@ static void title_cb(const char *title, void *ctx)
 	//-- fetch_task() fires a dummy title_cb("", ctx) as soon as it starts;
 	//-- ignore only that empty placeholder, not real titles.
 	if (!title || !title[0]) return;
-	char artist[160], track[160];
-	split_icy_title(title, artist, sizeof(artist), track, sizeof(track));
-	snprintf(s_last_artist, sizeof(s_last_artist), "%s", artist);
-	snprintf(s_last_track, sizeof(s_last_track), "%s", track);
+	char line1[160], line2[160], line3[160];
+	build_icy_lines(title, line1, line2, line3);
+	snprintf(s_last_line1, sizeof(s_last_line1), "%s", line1);
+	snprintf(s_last_line2, sizeof(s_last_line2), "%s", line2);
+	snprintf(s_last_line3, sizeof(s_last_line3), "%s", line3);
 	//-- Stay silent while muted so "Switch Station .." (see
 	//-- on_audio_mute_changed) stays on screen for the whole switch; the
 	//-- cached title above is flushed the moment we unmute instead.
 	if (radio_audio_is_muted()) return;
-	radio_display_now_playing(artist, track);
-	web_gui_notify_title(artist, track);
+	radio_display_now_playing(line1, line2, line3);
+	web_gui_notify_title(line1, line2, line3);
 }
 
 //-- Fired by radio_audio the instant a station switch starts (still muted)
@@ -75,17 +177,18 @@ static void on_audio_mute_changed(bool muted, void *ctx)
 {
 	(void)ctx;
 	if (muted) {
-		snprintf(s_last_artist, sizeof(s_last_artist), "-");
-		snprintf(s_last_track, sizeof(s_last_track), "-");
-		radio_display_now_playing("Switch Station ..", "-");
-		web_gui_notify_title("Switch Station ..", "-");
+		snprintf(s_last_line1, sizeof(s_last_line1), "-");
+		snprintf(s_last_line2, sizeof(s_last_line2), "-");
+		snprintf(s_last_line3, sizeof(s_last_line3), "-");
+		radio_display_now_playing("Switch Station ..", "-", "-");
+		web_gui_notify_title("Switch Station ..", "-", "-");
 	} else {
 		//-- Flush whatever real title already arrived during the mute
 		//-- window (the first ICY metadata block often lands here) instead
-		//-- of forcing a stale "-"/"-" that only a *second* title update
+		//-- of forcing a stale "-"/"-"/"-" that only a *second* title update
 		//-- would have overwritten.
-		radio_display_now_playing(s_last_artist, s_last_track);
-		web_gui_notify_title(s_last_artist, s_last_track);
+		radio_display_now_playing(s_last_line1, s_last_line2, s_last_line3);
+		web_gui_notify_title(s_last_line1, s_last_line2, s_last_line3);
 	}
 }
 
@@ -100,8 +203,8 @@ static void stall_cb(bool stalled, void *ctx)
 {
 	(void)ctx;
 	if (!stalled) return;
-	radio_display_now_playing("Stream stalled", "-");
-	web_gui_notify_title("Stream stalled", "-");
+	radio_display_now_playing("Stream stalled", "-", "-");
+	web_gui_notify_title("Stream stalled", "-", "-");
 }
 
 //-- Fired by web_gui after a browser-issued command actually changed the
