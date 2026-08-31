@@ -22,19 +22,21 @@ typedef struct {
 	char station[RADIO_NAME_MAX];
 	size_t selected;
 	char status[DISPLAY_STATUS_MAX];
-	char title[DISPLAY_TITLE_MAX];
+	char artist[DISPLAY_TITLE_MAX];
+	char track[DISPLAY_TITLE_MAX];
 } display_message_t;
 
 static QueueHandle_t s_queue;
 
-//-- Last-drawn Volume-screen state, kept so a now-playing title arriving
-//-- asynchronously from radio_audio can be merged into a redraw without the
-//-- caller having to resend the volume/station it already sent, and so a
-//-- rotation-only update can skip redrawing what hasn't changed
+//-- Last-drawn Volume-screen state, kept so a now-playing artist/track pair
+//-- arriving asynchronously from radio_audio can be merged into a redraw
+//-- without the caller having to resend the volume/station it already sent,
+//-- and so a rotation-only update can skip redrawing what hasn't changed
 static display_mode_t s_current_mode = DISPLAY_MODE_STATUS;
 static int s_cached_volume;
 static char s_cached_station[RADIO_NAME_MAX];
-static char s_cached_title[DISPLAY_TITLE_MAX];
+static char s_cached_artist[DISPLAY_TITLE_MAX];
+static char s_cached_track[DISPLAY_TITLE_MAX];
 
 //-- Windowed-list redraw cache: SIZE_MAX means "not drawn yet", forcing a
 //-- full redraw the first time the Select-Station screen is shown
@@ -89,17 +91,33 @@ static void draw_volume_bar(uint16_t width, int volume)
 	}
 }
 
-//-- Always draws (even for an empty title) so a title that disappears
-//-- (station with no metadata) clears instead of leaving stale text behind
-static void draw_volume_title(uint16_t width, const char *title)
+//-- Clears the full line width first so a shorter new value can never leave
+//-- stale glyphs behind from a longer previous one (tft_ec11_draw_text only
+//-- clears exactly the slot count it's given), then draws the centered text
+//-- at a larger scale than the rest of the Volume screen.
+static void draw_now_playing_line(uint16_t width, int y, int scale, const char *text)
 {
-	int bar_y = 96, bar_h = 20;
+	int ch = 8 * scale;
+	tft_ec11_fill_rect(0, y, width, ch, TFT_EC11_BLACK);
+	size_t max_chars = (size_t)((width - 8) / (6 * scale));
+	size_t len = strlen(text);
+	if (len > max_chars) len = max_chars;
+	int x = ((int)width - (int)len * 6 * scale) / 2;
+	if (x < 0) x = 0;
 	tft_ec11_set_background(TFT_EC11_BLACK);
-	tft_ec11_set_text_style(TFT_EC11_CYAN, 1);
-	tft_ec11_draw_text(4, bar_y + bar_h + 8, (width - 8) / 6, title ? title : "");
+	tft_ec11_set_text_style(TFT_EC11_CYAN, scale);
+	tft_ec11_draw_text(x, y, len, text);
 }
 
-static void draw_volume_full(int volume, const char *station, const char *title)
+//-- Always draws (even for "-") so a track that disappears (station with no
+//-- metadata) clears instead of leaving stale text behind
+static void draw_now_playing(uint16_t width, const char *artist, const char *track)
+{
+	draw_now_playing_line(width, 124, 2, artist ? artist : "-");
+	draw_now_playing_line(width, 144, 2, track ? track : "-");
+}
+
+static void draw_volume_full(int volume, const char *station, const char *artist, const char *track)
 {
 	uint16_t width = tft_ec11_width();
 
@@ -113,7 +131,7 @@ static void draw_volume_full(int volume, const char *station, const char *title)
 
 	draw_volume_percent(width, volume);
 	draw_volume_bar(width, volume);
-	draw_volume_title(width, title);
+	draw_now_playing(width, artist, track);
 
 	draw_hint("Push4Station");
 }
@@ -223,7 +241,7 @@ static void display_task(void *argument)
 			s_cached_volume = message.volume;
 			snprintf(s_cached_station, sizeof(s_cached_station), "%s", message.station);
 			if (entering || station_changed) {
-				draw_volume_full(s_cached_volume, s_cached_station, s_cached_title);
+				draw_volume_full(s_cached_volume, s_cached_station, s_cached_artist, s_cached_track);
 			} else {
 				uint16_t width = tft_ec11_width();
 				draw_volume_percent(width, s_cached_volume);
@@ -231,12 +249,15 @@ static void display_task(void *argument)
 			}
 			break;
 		}
-		case DISPLAY_MODE_TITLE:
-			snprintf(s_cached_title, sizeof(s_cached_title), "%s", message.title);
-			if (s_current_mode == DISPLAY_MODE_VOLUME) {
-				draw_volume_title(tft_ec11_width(), s_cached_title);
+		case DISPLAY_MODE_TITLE: {
+			bool changed = strcmp(s_cached_artist, message.artist) != 0 || strcmp(s_cached_track, message.track) != 0;
+			snprintf(s_cached_artist, sizeof(s_cached_artist), "%s", message.artist);
+			snprintf(s_cached_track, sizeof(s_cached_track), "%s", message.track);
+			if (changed && s_current_mode == DISPLAY_MODE_VOLUME) {
+				draw_now_playing(tft_ec11_width(), s_cached_artist, s_cached_track);
 			}
 			break;
+		}
 		case DISPLAY_MODE_STATION_SELECT: {
 			bool entering = s_current_mode != DISPLAY_MODE_STATION_SELECT;
 			s_current_mode = DISPLAY_MODE_STATION_SELECT;
@@ -269,10 +290,11 @@ void radio_display_volume(int volume, const char *station)
 	if (s_queue) (void)xQueueSend(s_queue, &message, 0);
 }
 
-void radio_display_now_playing(const char *title)
+void radio_display_now_playing(const char *artist, const char *track)
 {
 	display_message_t message = {.mode = DISPLAY_MODE_TITLE};
-	if (title) snprintf(message.title, sizeof(message.title), "%s", title);
+	if (artist) snprintf(message.artist, sizeof(message.artist), "%s", artist);
+	if (track) snprintf(message.track, sizeof(message.track), "%s", track);
 	if (s_queue) (void)xQueueSend(s_queue, &message, 0);
 }
 

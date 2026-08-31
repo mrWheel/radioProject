@@ -20,6 +20,7 @@
 static const char *TAG = "WEB_GUI";
 static httpd_handle_t s_server = NULL;
 static size_t s_current_station_index = 0;
+static char s_current_artist[160] = "";
 static char s_current_track[160] = "";
 static QueueHandle_t s_ws_queue = NULL;
 static TaskHandle_t s_ws_worker_task = NULL;
@@ -99,7 +100,7 @@ static void web_gui_fill_state(cJSON *data)
     cJSON_AddNumberToObject(data, "volume", (double)radio_audio_get_volume());
     cJSON_AddBoolToObject(data, "playing", station_count > 0 && !radio_audio_is_paused());
     cJSON_AddBoolToObject(data, "streamConnected", true);
-    cJSON_AddStringToObject(data, "artist", "");
+    cJSON_AddStringToObject(data, "artist", s_current_artist);
     cJSON_AddStringToObject(data, "track", s_current_track);
 
     const radio_station_t *station = station_store_get(station_index);
@@ -551,10 +552,13 @@ esp_err_t web_gui_init(void)
     return ESP_OK;
 }
 
-void web_gui_notify_title(const char *title)
+void web_gui_notify_title(const char *artist, const char *track)
 {
-    strlcpy(s_current_track, title ? title : "", sizeof(s_current_track));
-    if (!s_server) {
+    bool changed = strcmp(s_current_artist, artist ? artist : "") != 0 ||
+                   strcmp(s_current_track, track ? track : "") != 0;
+    strlcpy(s_current_artist, artist ? artist : "", sizeof(s_current_artist));
+    strlcpy(s_current_track, track ? track : "", sizeof(s_current_track));
+    if (!changed || !s_server) {
         return;
     }
     cJSON *root = cJSON_CreateObject();

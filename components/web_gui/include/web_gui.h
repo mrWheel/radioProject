@@ -8,7 +8,7 @@ extern "C" {
 
 esp_err_t web_gui_init(void);
 void web_gui_deinit(void);
-void web_gui_notify_title(const char *title);
+void web_gui_notify_title(const char *artist, const char *track);
 
 #ifdef __cplusplus
 }

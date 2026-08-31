@@ -1,4 +1,4 @@
-const state = { stationIndex: 0, stationCount: 0, volume: 0, artist: '', track: '', playing: false, streamConnected: false, station: null };
+const state = { stationIndex: 0, stationCount: 0, volume: 0, artist: '-', track: '-', playing: false, streamConnected: false, station: null };
 let ws = null;
 let wsReady = false;
 let manageMode = 'view';
@@ -37,10 +37,12 @@ function applyState(data) {
   state.streamConnected = !!data.streamConnected;
   state.station = data.station || null;
   if (state.station && state.station.name) document.getElementById('stationName').textContent = state.station.name;
-  if (data.artist) state.artist = data.artist;
-  if (data.track) state.track = data.track;
-  document.getElementById('artist').textContent = state.artist || 'No artist';
-  document.getElementById('track').textContent = state.track || 'No track information';
+  state.artist = data.artist ?? state.artist;
+  state.track = data.track ?? state.track;
+  const artistEl = document.getElementById('artist');
+  if (artistEl.textContent !== state.artist) artistEl.textContent = state.artist;
+  const trackEl = document.getElementById('track');
+  if (trackEl.textContent !== state.track) trackEl.textContent = state.track;
   const slider = document.getElementById('volumeSlider');
   slider.value = String(state.volume);
   document.getElementById('volumeValue').textContent = state.volume + '%';
