@@ -9,6 +9,19 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+#-- Allows radio_audio's fetch_task to fall back to an unverified TLS
+#-- connection when a station's certificate chain terminates at a root CA
+#-- that isn't in the bundle (e.g. legacy cross-signed roots some
+#-- broadcaster CDNs still serve). Only used after verified attempts fail.
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+#-- esp_http_client_get_header() only reads headers WE set on the request;
+#-- reading server RESPONSE headers (Location, Content-Type, icy-metaint,
+#-- ...) requires esp_http_client_get_response_header(), which needs this
+#-- storage enabled. Without it those lookups silently always miss.
+CONFIG_ESP_HTTP_CLIENT_SAVE_RESPONSE_HEADERS=y
+CONFIG_ESP_HTTP_CLIENT_MAX_SAVED_RESPONSE_HEADERS=20
+CONFIG_ESP_HTTP_CLIENT_MAX_RESPONSE_HEADER_SIZE=256
 CONFIG_AUDIO_DECODER_MP3_SUPPORT=y
 CONFIG_AUDIO_DECODER_AAC_SUPPORT=y
 CONFIG_RADIO_ENCODER_REVERSED=n

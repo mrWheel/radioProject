@@ -125,6 +125,33 @@ For HTTPS streams, log:
 
 Do not globally disable certificate verification as a workaround. The purpose is diagnosis, not hiding TLS errors.
 
+### TLS verification fallback (approved, bounded exception)
+
+Some broadcaster CDNs (e.g. streamtheworld.com, used by Radio 538) serve a certificate chain whose topmost cert is a legacy/deprecated root (e.g. "Go Daddy Class 2 Certification Authority") that Mozilla's trust store — and therefore `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL` — no longer includes, even though a trusted intermediate ("G2") exists further down the chain. `esp_crt_bundle_attach`'s mbedTLS callback matches only the topmost chain cert against the bundle and does not backtrack like a browser, so verified TLS hard-fails for these hosts no matter how complete the bundle is.
+
+The approved, generic fix (`create_http_client()` / `open_with_retries()` in [radio_audio.c](components/radio_audio/radio_audio.c)) is:
+
+1. Attempt the connection with full certificate verification (`crt_bundle_attach = esp_crt_bundle_attach`) up to 3 times.
+2. Only for `https://` URLs, if all verified attempts fail, retry once more with verification skipped (`crt_bundle_attach = NULL`).
+3. Log every attempt via `TAG_TLS`/`TAG_HTTP` so the monitor always shows whether a stream is playing verified or unverified, and why.
+
+This is a bounded, per-connection, logged last resort — not a global `CONFIG_ESP_TLS_INSECURE` policy applied blindly. The Kconfig options it depends on are documented in `sdkconfig.defaults`:
+
+```
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+```
+
+Without both of these, esp-tls hard-errors instead of connecting when no CA option is set at all, so the unverified fallback attempt would simply fail to open rather than degrade gracefully.
+
+### HTTP redirect following (manual streaming API)
+
+This project uses the manual `esp_http_client_open()` + `esp_http_client_fetch_headers()` + `esp_http_client_read()` streaming pattern (not `esp_http_client_perform()`), because streaming must hand bytes to the decoder as they arrive. ESP-IDF's built-in redirect following (`esp_http_check_response()`, `HTTP_EVENT_REDIRECT`) only fires inside `esp_http_client_perform()`, so it never triggers on this code path — a `3xx` response with a `Location` header (e.g. the `livestream-redirect` APIs some CDNs use) was previously never followed at all.
+
+`fetch_task()` now wraps station opening in an explicit redirect loop (`current_url` buffer, `max_redirects = 5`): on a `3xx` status it reads the `Location` response header, and if present and redirects remain, re-opens a fresh client at that URL (re-running the same verified/unverified TLS retry logic per hop) instead of failing immediately. Exceeding `max_redirects` or a missing `Location` header ends the attempt with a clear "unresolved HTTP redirect" failure reason — it is never silently swallowed.
+
+**Pitfall this depends on getting right:** `esp_http_client_get_header()` only reads headers *we* set on the outgoing request; it can never see what the server sent back. Reading any response header — `Location`, `Content-Type`, `Transfer-Encoding`, `Content-Length`, `icy-metaint`, etc. — requires `esp_http_client_get_response_header()`, and that function's backing storage only exists when `CONFIG_ESP_HTTP_CLIENT_SAVE_RESPONSE_HEADERS=y` is set (default: disabled). Every response-header lookup in `radio_audio.c` must use `esp_http_client_get_response_header()`, and this Kconfig option (plus `CONFIG_ESP_HTTP_CLIENT_MAX_SAVED_RESPONSE_HEADERS` / `CONFIG_ESP_HTTP_CLIENT_MAX_RESPONSE_HEADER_SIZE`) must stay enabled in `sdkconfig.defaults` — otherwise redirects, Content-Type sniffing, and ICY metadata detection all silently stop working for every station, not just one.
+
 ### HTTP request and response diagnostics
 
 Before sending the request, log the actual method, URL, and important headers such as:
@@ -264,6 +291,9 @@ Do not assume that a URL that works in a browser is necessarily a direct audio s
 - [x] Log DNS resolution and IPv4/IPv6 results.
 - [x] Log HTTP status, headers, and content-type detection.
 - [x] Add redirect detection and redirect target logging.
+- [x] Follow HTTP redirects in the manual streaming read path (`fetch_task()` redirect loop, `max_redirects = 5`), since `esp_http_client_perform()`'s built-in redirect handling never runs on this code path.
+- [x] Fix response-header reads (`Location`, `Content-Type`, `icy-metaint`, ...) to use `esp_http_client_get_response_header()` + `CONFIG_ESP_HTTP_CLIENT_SAVE_RESPONSE_HEADERS=y`, since `esp_http_client_get_header()` only ever sees request headers.
+- [x] Add a bounded, logged TLS-verification fallback (verified x3, then unverified once, HTTPS only) for CDNs whose chain terminates at a root missing from the certificate bundle.
 - [x] Add retry logging without hiding original failure reasons.
 - [x] Add User-Agent and ICY metadata request logging.
 - [x] Detect HTML, playlist, and HLS/DASH-like payloads.

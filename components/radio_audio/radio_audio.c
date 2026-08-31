@@ -192,23 +192,23 @@ static void log_http_response(esp_http_client_handle_t h)
 	char *icy_metaint = NULL;
 	int status = esp_http_client_get_status_code(h);
 	ESP_LOGI(TAG_HTTP, "HTTP status: %d", status);
-	if (esp_http_client_get_header(h, "Content-Type", &content_type) == ESP_OK && content_type) {
+	if (esp_http_client_get_response_header(h, "Content-Type", &content_type) == ESP_OK && content_type) {
 		ESP_LOGI(TAG_HTTP, "Content-Type: %s", content_type);
 	}
-	if (esp_http_client_get_header(h, "Location", &location) == ESP_OK && location) {
+	if (esp_http_client_get_response_header(h, "Location", &location) == ESP_OK && location) {
 		ESP_LOGW(TAG_HTTP, "Redirect returned: %s", location);
 	}
-	if (esp_http_client_get_header(h, "Transfer-Encoding", &transfer_encoding) == ESP_OK && transfer_encoding) {
+	if (esp_http_client_get_response_header(h, "Transfer-Encoding", &transfer_encoding) == ESP_OK && transfer_encoding) {
 		ESP_LOGI(TAG_HTTP, "Transfer-Encoding: %s", transfer_encoding);
 	} else {
 		ESP_LOGI(TAG_HTTP, "Transfer-Encoding: none");
 	}
-	if (esp_http_client_get_header(h, "Content-Length", &content_length) == ESP_OK && content_length) {
+	if (esp_http_client_get_response_header(h, "Content-Length", &content_length) == ESP_OK && content_length) {
 		ESP_LOGI(TAG_HTTP, "Content-Length: %s", content_length);
 	} else {
 		ESP_LOGI(TAG_HTTP, "Content-Length: not supplied");
 	}
-	if (esp_http_client_get_header(h, "icy-metaint", &icy_metaint) == ESP_OK && icy_metaint) {
+	if (esp_http_client_get_response_header(h, "icy-metaint", &icy_metaint) == ESP_OK && icy_metaint) {
 		ESP_LOGI(TAG_HTTP, "icy-metaint: %s", icy_metaint);
 	} else {
 		ESP_LOGI(TAG_HTTP, "icy-metaint: not supplied");
@@ -228,14 +228,14 @@ static const char *detect_payload_type(const uint8_t *buf, size_t len, const cha
 		return "HLS/DASH playlist";
 	}
 	if (len >= 7 && memcmp(buf, "#EXTM3U", 7) == 0) return "HLS/M3U";
-	if (len >= 8 && memcmp(buf, "[playlist]", 9) == 0) return "PLS";
+	if (len >= 9 && memcmp(buf, "[playlist]", 9) == 0) return "PLS";
 	if (len >= 5 && memcmp(buf, "<!DOC", 5) == 0) return "HTML";
 	if (len >= 5 && (memcmp(buf, "<html", 5) == 0 || memcmp(buf, "<?xml", 5) == 0)) return "HTML/XML";
 	if (len >= 4 && memcmp(buf, "OggS", 4) == 0) return "Ogg";
 	if (len >= 4 && memcmp(buf, "fLaC", 4) == 0) return "FLAC";
 	if (len >= 3 && (buf[0] == 0xFF && (buf[1] == 0xFB || buf[1] == 0xF3 || buf[1] == 0xF2))) return "MP3";
 	if (len >= 2 && (buf[0] == 0xFF && (buf[1] == 0xF1 || buf[1] == 0xF9))) return "AAC";
-	if (len >= 10 && strncmp((const char *)buf, "StreamTitle", 11) == 0) return "ICY metadata";
+	if (len >= 11 && strncmp((const char *)buf, "StreamTitle", 11) == 0) return "ICY metadata";
 	return "unknown";
 }
 
@@ -311,7 +311,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 		if (evt->client) {
 			char *loc = NULL;
 			ESP_LOGW(TAG_HTTP, "Redirect detected");
-			if (esp_http_client_get_header(evt->client, "Location", &loc) == ESP_OK && loc) {
+			if (esp_http_client_get_response_header(evt->client, "Location", &loc) == ESP_OK && loc) {
 				ESP_LOGW(TAG_HTTP, "Location: %s", loc);
 			}
 		}
@@ -344,6 +344,89 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 	return ESP_OK;
 }
 
+//-- Builds an esp_http_client handle for `url`, with TLS certificate
+//-- verification either enabled (via the certificate bundle) or disabled.
+//-- Used to re-create the handle with a different verification mode when
+//-- the verified attempts in fetch_task are exhausted.
+static esp_http_client_handle_t create_http_client(const char *url, bool verify_tls)
+{
+	esp_http_client_config_t hc = {.url = url, .crt_bundle_attach = verify_tls ? esp_crt_bundle_attach : NULL, .timeout_ms = 10000, .buffer_size = 4096, .keep_alive_enable = true, .event_handler = http_event_handler, .user_agent = "ESP32-Internet-Radio/1.0", .max_redirection_count = 5};
+	esp_http_client_handle_t h = esp_http_client_init(&hc);
+	if (!h) return NULL;
+	esp_http_client_set_header(h, "User-Agent", "ESP32-Internet-Radio/1.0");
+	esp_http_client_set_header(h, "Accept", "*/*");
+	esp_http_client_set_header(h, "Icy-Metadata", "1");
+	esp_http_client_set_header(h, "Connection", "close");
+	return h;
+}
+
+//-- Opens `url` with certificate verification, retrying up to
+//-- `verified_attempts` times; if every verified attempt fails on an HTTPS
+//-- URL, falls back to one unverified TLS attempt (see create_http_client)
+//-- so a station whose chain the bundle can't validate still plays instead
+//-- of refusing to open. On success returns the open handle and reports
+//-- whether TLS was verified via `*out_tls_verified`; on failure returns
+//-- NULL and copies a short reason into `reason_out` (already logged).
+static esp_http_client_handle_t open_with_retries(const char *url, bool *out_tls_verified, char *reason_out, size_t reason_cap)
+{
+	bool is_https = strncmp(url, "https://", 8) == 0;
+	bool tls_verified = true;
+	esp_http_client_handle_t h = create_http_client(url, tls_verified);
+	if (!h) {
+		ESP_LOGE(TAG_HTTP, "HTTP client init failed for %s", url);
+		strlcpy(reason_out, "client init failed", reason_cap);
+		return NULL;
+	}
+	ESP_LOGI(TAG_HTTP, "Method: GET");
+	ESP_LOGI(TAG_HTTP, "Request URL: %s", url);
+	ESP_LOGI(TAG_HTTP, "HTTP version: library-managed by esp_http_client");
+	ESP_LOGI(TAG_HTTP, "User-Agent: ESP32-Internet-Radio/1.0");
+	ESP_LOGI(TAG_HTTP, "Icy-Metadata: 1");
+	const int verified_attempts = 3;
+	const int total_attempts = is_https ? verified_attempts + 1 : verified_attempts;
+	for (int attempt = 1; attempt <= total_attempts; ++attempt) {
+		if (esp_http_client_open(h, 0) == ESP_OK) {
+			if (is_https && !tls_verified) ESP_LOGW(TAG_TLS, "Connected without TLS certificate verification (bundle rejected server's certificate chain)");
+			*out_tls_verified = tls_verified;
+			return h;
+		}
+		int err = esp_http_client_get_errno(h);
+		esp_http_client_close(h);
+		//-- Some broadcaster CDNs serve a certificate chain that terminates
+		//-- at a root CA missing from the certificate bundle (e.g. a legacy
+		//-- cross-signed root); every verified attempt against such a
+		//-- station fails identically, so retrying with the same config is
+		//-- pointless. Switch to one unverified TLS attempt instead. This is
+		//-- generic: it engages for any station whose chain the bundle
+		//-- can't validate, not a specific host.
+		if (attempt == verified_attempts && is_https && tls_verified) {
+			ESP_LOGW(TAG_TLS, "Certificate verification failed %d times for %s; falling back to one unverified TLS attempt", attempt, url);
+			esp_http_client_cleanup(h);
+			tls_verified = false;
+			h = create_http_client(url, tls_verified);
+			if (!h) {
+				ESP_LOGE(TAG_HTTP, "HTTP client re-init failed for %s", url);
+				strlcpy(reason_out, "client re-init failed", reason_cap);
+				return NULL;
+			}
+			continue;
+		}
+		if (attempt < total_attempts) {
+			log_retry_event(attempt, total_attempts, url, err != 0 ? strerror(err) : "connection failed");
+			vTaskDelay(pdMS_TO_TICKS(2000));
+			continue;
+		}
+		ESP_LOGE(TAG_HTTP, "HTTP open failed for %s", url);
+		ESP_LOGE(TAG_TLS, "TLS handshake failed");
+		if (err != 0) ESP_LOGE(TAG_HTTP, "errno=%d (%s)", err, strerror(err));
+		strlcpy(reason_out, err != 0 ? strerror(err) : "HTTP open failed", reason_cap);
+		esp_http_client_cleanup(h);
+		return NULL;
+	}
+	esp_http_client_cleanup(h);
+	return NULL;
+}
+
 //-- Owns the HTTP/ICY connection and does nothing else: reads network bytes,
 //-- strips interleaved ICY metadata, and pushes pure audio bytes into the
 //-- stream buffer. Runs on its own core so a slow/blocking read never delays
@@ -356,76 +439,79 @@ static void fetch_task(void *arg)
 	uint64_t start_us = esp_timer_get_time();
 	size_t bytes_received = 0;
 	int http_code = 0;
-	const char *failure_reason = "stream closed";
 	if (s_title_cb) s_title_cb("", s_title_ctx);
 	log_station_banner(&station);
-	log_url_details(station.url);
-	const char *host = NULL;
-	const char *colon = strstr(station.url, "://");
-	if (colon) {
-		host = colon + 3;
-		if (strncmp(station.url, "https://", 8) == 0) {
-			ESP_LOGI(TAG_TLS, "HTTPS connection requested");
-			ESP_LOGI(TAG_TLS, "Certificate bundle attach configured");
-		} else if (strncmp(station.url, "http://", 7) == 0) {
-			ESP_LOGI(TAG_HTTP, "HTTP connection requested");
+	char current_url[RADIO_URL_MAX];
+	strlcpy(current_url, station.url, sizeof(current_url));
+	char failure_reason_buf[64] = "HTTP open failed";
+	esp_http_client_handle_t h = NULL;
+	bool tls_verified = true;
+	//-- A "livestream-redirect" style API (used by several broadcaster
+	//-- CDNs, e.g. streamtheworld.com) answers with an HTTP 3xx pointing at
+	//-- the actual stream host instead of audio. esp_http_client only
+	//-- follows redirects automatically inside esp_http_client_perform(),
+	//-- which this streaming reader doesn't use, so redirects are followed
+	//-- explicitly here for any station that needs it.
+	const int max_redirects = 5;
+	for (int redirect = 0; redirect <= max_redirects; ++redirect) {
+		log_url_details(current_url);
+		const char *host = NULL;
+		const char *colon = strstr(current_url, "://");
+		if (colon) {
+			host = colon + 3;
+			if (strncmp(current_url, "https://", 8) == 0) {
+				ESP_LOGI(TAG_TLS, "HTTPS connection requested");
+				ESP_LOGI(TAG_TLS, "Certificate bundle attach configured");
+			} else if (strncmp(current_url, "http://", 7) == 0) {
+				ESP_LOGI(TAG_HTTP, "HTTP connection requested");
+			}
 		}
-	}
-	if (host) {
-		const char *host_end = strchr(host, '/');
-		char host_copy[128] = {0};
-		if (host_end) {
-			size_t len = (size_t)(host_end - host);
-			if (len >= sizeof(host_copy)) len = sizeof(host_copy) - 1;
-			memcpy(host_copy, host, len);
-			host_copy[len] = '\0';
-			log_dns_resolution(host_copy);
-		} else {
-			strlcpy(host_copy, host, sizeof(host_copy));
-			log_dns_resolution(host_copy);
+		if (host) {
+			const char *host_end = strchr(host, '/');
+			char host_copy[128] = {0};
+			if (host_end) {
+				size_t len = (size_t)(host_end - host);
+				if (len >= sizeof(host_copy)) len = sizeof(host_copy) - 1;
+				memcpy(host_copy, host, len);
+				host_copy[len] = '\0';
+				log_dns_resolution(host_copy);
+			} else {
+				strlcpy(host_copy, host, sizeof(host_copy));
+				log_dns_resolution(host_copy);
+			}
 		}
-	}
 
-	esp_http_client_config_t hc = {.url = station.url, .crt_bundle_attach = esp_crt_bundle_attach, .timeout_ms = 10000, .buffer_size = 4096, .keep_alive_enable = true, .event_handler = http_event_handler, .user_agent = "ESP32-Internet-Radio/1.0", .max_redirection_count = 5};
-	esp_http_client_handle_t h = esp_http_client_init(&hc);
-	if (!h) {
-		ESP_LOGE(TAG_HTTP, "HTTP client init failed for %s", station.url);
-		goto done;
-	}
-	esp_http_client_set_header(h, "User-Agent", "ESP32-Internet-Radio/1.0");
-	esp_http_client_set_header(h, "Accept", "*/*");
-	esp_http_client_set_header(h, "Icy-Metadata", "1");
-	esp_http_client_set_header(h, "Connection", "close");
-	ESP_LOGI(TAG_HTTP, "Method: GET");
-	ESP_LOGI(TAG_HTTP, "Request URL: %s", station.url);
-	ESP_LOGI(TAG_HTTP, "HTTP version: library-managed by esp_http_client");
-	ESP_LOGI(TAG_HTTP, "User-Agent: ESP32-Internet-Radio/1.0");
-	ESP_LOGI(TAG_HTTP, "Icy-Metadata: 1");
-	for (int attempt = 1; attempt <= 3; ++attempt) {
-		if (esp_http_client_open(h, 0) == ESP_OK) break;
-		int err = esp_http_client_get_errno(h);
-		if (attempt < 3) {
-			log_retry_event(attempt, 3, station.url, err != 0 ? strerror(err) : "connection failed");
-			vTaskDelay(pdMS_TO_TICKS(2000));
-			esp_http_client_close(h);
-			continue;
+		h = open_with_retries(current_url, &tls_verified, failure_reason_buf, sizeof(failure_reason_buf));
+		if (!h) {
+			log_stream_summary(station.name, current_url, failure_reason_buf, NULL, false, 0);
+			goto done;
 		}
-		ESP_LOGE(TAG_HTTP, "HTTP open failed for %s", station.url);
-		ESP_LOGE(TAG_TLS, "TLS handshake failed");
-		if (err != 0) ESP_LOGE(TAG_HTTP, "errno=%d (%s)", err, strerror(err));
-		failure_reason = err != 0 ? strerror(err) : "HTTP open failed";
-		log_stream_summary(station.name, station.url, failure_reason, NULL, false, esp_http_client_get_status_code(h));
-		goto done;
+		esp_http_client_fetch_headers(h);
+		http_code = esp_http_client_get_status_code(h);
+		log_http_response(h);
+
+		if (http_code < 300 || http_code >= 400) break;
+		char *location = NULL;
+		if (redirect == max_redirects || esp_http_client_get_response_header(h, "Location", &location) != ESP_OK || !location) {
+			ESP_LOGE(TAG_HTTP, "Unresolved HTTP redirect (status %d) for %s", http_code, current_url);
+			log_stream_summary(station.name, current_url, "unresolved HTTP redirect", NULL, false, http_code);
+			esp_http_client_close(h);
+			esp_http_client_cleanup(h);
+			h = NULL;
+			goto done;
+		}
+		ESP_LOGW(TAG_HTTP, "Following redirect to %s", location);
+		strlcpy(current_url, location, sizeof(current_url));
+		esp_http_client_close(h);
+		esp_http_client_cleanup(h);
+		h = NULL;
 	}
-	esp_http_client_fetch_headers(h);
-	http_code = esp_http_client_get_status_code(h);
-	log_http_response(h);
 
 	//-- ICY metadata: server interleaves a length-prefixed "StreamTitle='...';"
 	//-- block every icy-metaint bytes of audio when we asked for it above
 	size_t meta_int = 0;
 	char *meta_hdr = NULL;
-	if (esp_http_client_get_header(h, "icy-metaint", &meta_hdr) == ESP_OK && meta_hdr) meta_int = (size_t)atoi(meta_hdr);
+	if (esp_http_client_get_response_header(h, "icy-metaint", &meta_hdr) == ESP_OK && meta_hdr) meta_int = (size_t)atoi(meta_hdr);
 	ESP_LOGI(TAG_STREAM, "icy-metaint=%d", (int)meta_int);
 	uint8_t *meta_buf = meta_int ? malloc(255 * 16 + 1) : NULL;
 	if (meta_int && !meta_buf) meta_int = 0;
@@ -466,7 +552,7 @@ static void fetch_task(void *arg)
 		}
 		if (!first_payload_logged) {
 			char *content_type = NULL;
-			if (esp_http_client_get_header(h, "Content-Type", &content_type) == ESP_OK && content_type) {
+			if (esp_http_client_get_response_header(h, "Content-Type", &content_type) == ESP_OK && content_type) {
 				log_payload_probe(chunk, (size_t)n, content_type);
 			} else {
 				log_payload_probe(chunk, (size_t)n, NULL);

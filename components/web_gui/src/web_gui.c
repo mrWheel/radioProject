@@ -539,7 +539,7 @@ esp_err_t web_gui_init(void)
         s_server = NULL;
         return ESP_ERR_NO_MEM;
     }
-    if (xTaskCreate(web_gui_ws_worker_task, "web_gui_ws", 4096, NULL, 5, &s_ws_worker_task) != pdPASS) {
+    if (xTaskCreate(web_gui_ws_worker_task, "web_gui_ws", 6144, NULL, 5, &s_ws_worker_task) != pdPASS) {
         vQueueDelete(s_ws_queue);
         s_ws_queue = NULL;
         httpd_stop(s_server);
