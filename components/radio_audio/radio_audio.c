@@ -35,6 +35,9 @@ static StreamBufferHandle_t s_sb; static StaticStreamBuffer_t s_sb_struct; stati
 //-- never bleeds into the new one; cleared only by the new stream once it has
 //-- decoded a couple of good frames (see stream_task)
 static volatile bool s_muted = true;
+//-- When paused the decode loop simply stops consuming from the ring buffer;
+//-- fetch_task then blocks on a full buffer instead of tearing down the connection
+static volatile bool s_paused = false;
 static radio_audio_title_cb_t s_title_cb; static void *s_title_ctx;
 static void apply_volume(int16_t *pcm,size_t samples){int v=s_volume;for(size_t i=0;i<samples;i++)pcm[i]=(int16_t)(((int32_t)pcm[i]*v)/100);}
 
@@ -530,6 +533,7 @@ static void stream_task(void *arg)
 	int good_frames = 0;
 
 	while (!s_stop_requested) {
+		if (s_paused) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }
 		size_t want = in_cap - in_len;
 		size_t n = xStreamBufferReceive(s_sb, in + in_len, want, pdMS_TO_TICKS(50));
 		if (n == 0) {
@@ -658,6 +662,9 @@ esp_err_t radio_audio_init(void)
 	if (!s_queue) return ESP_ERR_NO_MEM;
 	return xTaskCreate(audio_task, "radio_audio", 4096, NULL, 6, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
-esp_err_t radio_audio_play(const radio_station_t*s){if(!s||!s_queue)return ESP_ERR_INVALID_ARG;s_muted=true;audio_message_t message={.station=*s};return xQueueSend(s_queue,&message,0)==pdTRUE?ESP_OK:ESP_ERR_TIMEOUT;}
+esp_err_t radio_audio_play(const radio_station_t*s){if(!s||!s_queue)return ESP_ERR_INVALID_ARG;s_muted=true;s_paused=false;audio_message_t message={.station=*s};return xQueueSend(s_queue,&message,0)==pdTRUE?ESP_OK:ESP_ERR_TIMEOUT;}
 void radio_audio_set_volume(int p){s_volume=p<0?0:(p>100?100:p);}
+int radio_audio_get_volume(void){return s_volume;}
+void radio_audio_set_paused(bool paused){s_paused=paused;}
+bool radio_audio_is_paused(void){return s_paused;}
 void radio_audio_set_title_callback(radio_audio_title_cb_t cb,void *ctx){s_title_cb=cb;s_title_ctx=ctx;}

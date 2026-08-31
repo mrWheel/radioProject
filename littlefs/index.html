@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Internet Radio</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div>Internet Radio</div>
+      <div></div>
+    </div>
+    <div class="content">
+      <div id="stationName" class="station-name">Loading…</div>
+      <div class="meta">
+        <div id="artist" class="artist">No artist</div>
+        <div id="track" class="track">No track information</div>
+      </div>
+      <div class="controls">
+        <div class="nav-row">
+          <button id="prevBtn" class="control-btn" type="button">◀ Previous</button>
+          <button id="playBtn" class="control-btn" type="button">▶ Play</button>
+          <button id="pauseBtn" class="control-btn" type="button">❚❚ Pause</button>
+          <button id="nextBtn" class="control-btn" type="button">Next ▶</button>
+        </div>
+        <div class="slider-wrap">
+          <div class="slider-row">
+            <span>Volume</span>
+            <div id="volumeValue" class="volume-value">0%</div>
+          </div>
+          <input id="volumeSlider" type="range" min="0" max="100" value="0" />
+        </div>
+        <button id="manageBtn" class="primary control-btn" type="button">Manage Stations</button>
+      </div>
+      <div id="status" class="status">Connecting…</div>
+    </div>
+  </div>
+  <div id="stationModal" class="modal">
+    <div class="modal-card">
+      <h3 id="stationModalTitle">Manage Stations</h3>
+      <div class="field">
+        <label for="stationNameInput">Station Name</label>
+        <input id="stationNameInput" type="text" maxlength="63" disabled />
+      </div>
+      <div class="field">
+        <label for="stationUrlInput">Stream URL</label>
+        <input id="stationUrlInput" type="url" maxlength="255" disabled />
+      </div>
+      <div class="field">
+        <label for="stationCodecInput">Codec</label>
+        <select id="stationCodecInput" disabled>
+          <option value="mp3">MP3</option>
+          <option value="aac">AAC</option>
+        </select>
+      </div>
+      <div id="stationViewActions" class="modal-actions">
+        <button id="deleteStationBtn" class="danger control-btn" type="button">Delete</button>
+        <button id="newStationBtn" class="control-btn" type="button">New</button>
+        <button id="editStationBtn" class="primary control-btn" type="button">Edit</button>
+      </div>
+      <div id="stationEditActions" class="modal-actions" style="display:none">
+        <button id="cancelStationBtn" class="control-btn" type="button">Cancel</button>
+        <button id="saveStationBtn" class="primary control-btn" type="button">Save</button>
+      </div>
+      <div class="modal-close-row">
+        <button id="closeStationBtn" class="control-btn" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
