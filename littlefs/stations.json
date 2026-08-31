@@ -17,6 +17,26 @@
       "codec": "mp3"
     },
     {
+      "name": "SomaFM Sonic Universe",
+      "url": "https://ice5.somafm.com/sonicuniverse-128-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "SomaFM Left Coast 70s",
+      "url": "https://ice5.somafm.com/seventies-128-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "SomaFM Left Coast 70s",
+      "url": "https://ice5.somafm.com/seventies-128-mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "Classic Rock California",
+      "url": "https://broadcast.shoutstream.co.uk:8014/stream",
+      "codec": "mp3"
+    },
+    {
       "name": "NPO Radio 1",
       "url": "https://icecast.omroep.nl/radio1-bb-mp3",
       "codec": "mp3"
@@ -32,9 +52,9 @@
       "codec": "mp3"
     },
     {
-      "name": "NPO Soul and Jazz",
-      "url": "https://icecast.omroep.nl/radio6-bb-aac",
-      "codec": "aac"
+      "name": "Jazz24",
+      "url": "https://knkx-live-a.edge.audiocdn.com/6285_128k",
+      "codec": "mp3"
     },
     {
       "name": "NPO Klassiek",
@@ -62,6 +82,11 @@
       "codec": "mp3"
     },
     {
+      "name": "538 Non-Stop",
+      "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/TLPSTR09.mp3",
+      "codec": "mp3"
+    },    
+    {
       "name": "Radio 538",
       "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/RADIO538.mp3",
       "codec": "mp3"
@@ -74,6 +99,16 @@
     {
       "name": "Radio 10",
       "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/RADIO10.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "Radio 10 60s & 70s Hits",
+      "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/TLPSTR18.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "GOUD RADIO",
+      "url": "https://luister.goudradio.nl",
       "codec": "mp3"
     },
     {

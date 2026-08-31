@@ -24,6 +24,8 @@ static char s_current_artist[160] = "";
 static char s_current_track[160] = "";
 static QueueHandle_t s_ws_queue = NULL;
 static TaskHandle_t s_ws_worker_task = NULL;
+static web_gui_state_applied_cb_t s_state_applied_cb = NULL;
+static void *s_state_applied_ctx = NULL;
 
 //-- Commands received over the /ws endpoint are queued here so the WebSocket
 //-- callback never performs long-running station/filesystem operations itself.
@@ -219,6 +221,17 @@ static void web_gui_apply_command(const char *type, const char *name, const char
     } else {
         cJSON_AddStringToObject(response_data, "message", "Unsupported command");
         cJSON_ReplaceItemInObject(root, "type", cJSON_CreateString("error"));
+    }
+
+    //-- Mirror a successful, state-changing web GUI command onto the physical
+    //-- display/EC11 tracking (app_main), so a station/volume change made from
+    //-- the browser doesn't leave the device's own state stale. getState never
+    //-- mutates anything, so it's excluded even though it also returns "state".
+    if (s_state_applied_cb && strcmp(type, "getState") != 0) {
+        cJSON *result_type = cJSON_GetObjectItemCaseSensitive(root, "type");
+        if (result_type && cJSON_IsString(result_type) && strcmp(result_type->valuestring, "state") == 0) {
+            s_state_applied_cb(s_current_station_index, radio_audio_get_volume(), s_state_applied_ctx);
+        }
     }
 }
 
@@ -568,6 +581,27 @@ void web_gui_notify_title(const char *artist, const char *track)
     web_gui_fill_state(response_data);
     web_gui_ws_broadcast(root);
     cJSON_Delete(root);
+}
+
+void web_gui_notify_device_state(size_t station_index)
+{
+    s_current_station_index = web_gui_station_index(station_index);
+    if (!s_server) {
+        return;
+    }
+    cJSON *root = cJSON_CreateObject();
+    cJSON *response_data = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "state");
+    cJSON_AddItemToObject(root, "data", response_data);
+    web_gui_fill_state(response_data);
+    web_gui_ws_broadcast(root);
+    cJSON_Delete(root);
+}
+
+void web_gui_set_state_applied_cb(web_gui_state_applied_cb_t cb, void *ctx)
+{
+    s_state_applied_cb = cb;
+    s_state_applied_ctx = ctx;
 }
 
 void web_gui_deinit(void)

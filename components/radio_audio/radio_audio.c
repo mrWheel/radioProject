@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <stdint.h>
 typedef struct { radio_station_t station; } audio_message_t;
 static const char *TAG = "RADIO";
 static const char *TAG_HTTP = "RADIO_HTTP";
@@ -26,11 +27,33 @@ static const char *TAG_CODEC = "RADIO_CODEC";
 static const char *TAG_BUFFER = "RADIO_BUFFER";
 //-- Raw, ICY-stripped audio bytes cross from fetch_task to stream_task through
 //-- this PSRAM ring buffer, so a network/HTTP stall never stalls the I2S feed
-//-- directly (~4s of buffering at 128kbps)
-#define STREAM_BUF_CAPACITY (64*1024)
+//-- directly (~8s of buffering at 128kbps)
+#define STREAM_BUF_CAPACITY (128*1024)
 #define FETCH_CHUNK_SIZE 4096
+//-- Buffer/HTTP-read diagnostics are summarized on this interval instead of
+//-- per-chunk, so normal playback doesn't flood the monitor
+#define BUF_LOG_INTERVAL_US (5*1000*1000)
 static i2s_chan_handle_t s_tx; static TaskHandle_t s_stream_task; static TaskHandle_t s_fetch_task; static QueueHandle_t s_queue; static radio_station_t s_station; static volatile int s_volume=60; static volatile bool s_stream_running; static volatile bool s_fetch_running; static volatile bool s_stop_requested;
 static StreamBufferHandle_t s_sb; static StaticStreamBuffer_t s_sb_struct; static uint8_t *s_sb_storage;
+static volatile uint32_t s_buf_underruns = 0; static volatile size_t s_buf_min_fill = SIZE_MAX; static uint64_t s_buf_last_log_us = 0;
+static volatile int s_icy_br_kbps = -1;
+//-- Counts consecutive (unbroken by any successful receive) underruns in
+//-- stream_task; reset to 0 the moment data flows again. Used to detect a
+//-- network-side stall that the ring buffer's slack can't absorb, so
+//-- fetch_task can be told to drop the connection and reconnect instead of
+//-- waiting forever on a stalled server (see AUDIO_BUFFER UNDERRUN diagnostics
+//-- where a single esp_http_client_read() call blocked for over a second).
+static volatile uint32_t s_buf_consecutive_underruns = 0;
+static volatile bool s_reconnect_requested = false;
+//-- Ring buffer must hold at least this many bytes before stream_task starts
+//-- decoding, so a brief network stall right after connecting doesn't
+//-- immediately starve playback (see AUDIO_BUFFER UNDERRUN diagnostics)
+#define BUF_PREFILL_THRESHOLD (STREAM_BUF_CAPACITY/4)
+#define BUF_PREFILL_TIMEOUT_US (5*1000*1000)
+//-- ~5s of continuous starvation (underruns fire roughly every 50ms while
+//-- fetch_task is still alive but the buffer stays empty) before giving up on
+//-- the current connection and reconnecting
+#define STALL_UNDERRUN_THRESHOLD 100
 //-- Set as soon as a switch is requested so a stale tail of the old station
 //-- never bleeds into the new one; cleared only by the new stream once it has
 //-- decoded a couple of good frames (see stream_task)
@@ -39,6 +62,8 @@ static volatile bool s_muted = true;
 //-- fetch_task then blocks on a full buffer instead of tearing down the connection
 static volatile bool s_paused = false;
 static radio_audio_title_cb_t s_title_cb; static void *s_title_ctx;
+static radio_audio_mute_cb_t s_mute_cb; static void *s_mute_ctx;
+static radio_audio_stall_cb_t s_stall_cb; static void *s_stall_ctx;
 static void apply_volume(int16_t *pcm,size_t samples){int v=s_volume;for(size_t i=0;i<samples;i++)pcm[i]=(int16_t)(((int32_t)pcm[i]*v)/100);}
 
 //-- Blocks until exactly `len` bytes are read (a single esp_http_client_read()
@@ -183,13 +208,14 @@ static void log_dns_resolution(const char *host)
 	}
 }
 
-static void log_http_response(esp_http_client_handle_t h)
+static void log_http_response(esp_http_client_handle_t h, int *out_icy_br_kbps)
 {
 	char *content_type = NULL;
 	char *location = NULL;
 	char *transfer_encoding = NULL;
 	char *content_length = NULL;
 	char *icy_metaint = NULL;
+	char *icy_br = NULL;
 	int status = esp_http_client_get_status_code(h);
 	ESP_LOGI(TAG_HTTP, "HTTP status: %d", status);
 	if (esp_http_client_get_response_header(h, "Content-Type", &content_type) == ESP_OK && content_type) {
@@ -212,6 +238,12 @@ static void log_http_response(esp_http_client_handle_t h)
 		ESP_LOGI(TAG_HTTP, "icy-metaint: %s", icy_metaint);
 	} else {
 		ESP_LOGI(TAG_HTTP, "icy-metaint: not supplied");
+	}
+	if (esp_http_client_get_response_header(h, "icy-br", &icy_br) == ESP_OK && icy_br) {
+		ESP_LOGI(TAG_HTTP, "icy-br: %s kbps", icy_br);
+		if (out_icy_br_kbps) *out_icy_br_kbps = atoi(icy_br);
+	} else {
+		ESP_LOGI(TAG_HTTP, "icy-br: not supplied");
 	}
 	if (status >= 300 && status < 400) {
 		ESP_LOGW(TAG_HTTP, "HTTP redirect detected; follow-up URL must be inspected");
@@ -439,7 +471,14 @@ static void fetch_task(void *arg)
 	uint64_t start_us = esp_timer_get_time();
 	size_t bytes_received = 0;
 	int http_code = 0;
+	s_buf_underruns = 0;
+	s_buf_min_fill = SIZE_MAX;
+	s_buf_last_log_us = start_us;
+	s_icy_br_kbps = -1;
+	s_buf_consecutive_underruns = 0;
+	s_reconnect_requested = false;
 	if (s_title_cb) s_title_cb("", s_title_ctx);
+	if (s_stall_cb) s_stall_cb(false, s_stall_ctx);
 	log_station_banner(&station);
 	char current_url[RADIO_URL_MAX];
 	strlcpy(current_url, station.url, sizeof(current_url));
@@ -488,7 +527,9 @@ static void fetch_task(void *arg)
 		}
 		esp_http_client_fetch_headers(h);
 		http_code = esp_http_client_get_status_code(h);
-		log_http_response(h);
+		int icy_br_kbps = -1;
+		log_http_response(h, &icy_br_kbps);
+		s_icy_br_kbps = icy_br_kbps;
 
 		if (http_code < 300 || http_code >= 400) break;
 		char *location = NULL;
@@ -521,6 +562,26 @@ static void fetch_task(void *arg)
 	if (!chunk) { free(meta_buf); goto done; }
 
 	while (!s_stop_requested) {
+		if (s_reconnect_requested) {
+			s_reconnect_requested = false;
+			ESP_LOGW(TAG_HTTP, "Reconnecting to %s after stall", current_url);
+			esp_http_client_close(h);
+			esp_http_client_cleanup(h);
+			h = open_with_retries(current_url, &tls_verified, failure_reason_buf, sizeof(failure_reason_buf));
+			if (!h) {
+				log_stream_summary(station.name, current_url, failure_reason_buf, NULL, false, 0);
+				break;
+			}
+			esp_http_client_fetch_headers(h);
+			http_code = esp_http_client_get_status_code(h);
+			int reconnect_icy_br_kbps = -1;
+			log_http_response(h, &reconnect_icy_br_kbps);
+			s_icy_br_kbps = reconnect_icy_br_kbps;
+			//-- New connection restarts the ICY audio/metadata interleaving
+			//-- from byte 0, so the next meta_int bytes are audio again
+			meta_remain = meta_int;
+			continue;
+		}
 		if (meta_int && meta_remain == 0) {
 			uint8_t len_byte;
 			if (http_read_exact(h, &len_byte, 1) != 0) {
@@ -545,7 +606,9 @@ static void fetch_task(void *arg)
 		size_t want = FETCH_CHUNK_SIZE;
 		if (meta_int && meta_remain < want) want = meta_remain;
 		if (want == 0) continue;
+		uint64_t read_start_us = esp_timer_get_time();
 		int n = esp_http_client_read(h, (char *)chunk, want);
+		uint64_t read_elapsed_us = esp_timer_get_time() - read_start_us;
 		if (n <= 0) {
 			ESP_LOGE(TAG_STREAM, "Stream read failed: n=%d errno=%d (%s)", n, errno, errno ? strerror(errno) : "no errno");
 			break;
@@ -574,6 +637,20 @@ static void fetch_task(void *arg)
 			}
 			sent += written;
 		}
+
+		size_t avail = xStreamBufferBytesAvailable(s_sb);
+		if (avail < s_buf_min_fill) s_buf_min_fill = avail;
+		uint64_t now_us = esp_timer_get_time();
+		if (now_us - s_buf_last_log_us >= BUF_LOG_INTERVAL_US) {
+			s_buf_last_log_us = now_us;
+			ESP_LOGD(TAG_BUFFER, "AUDIO_BUFFER: fill=%zu / %d, min=%zu, underruns=%lu", avail, STREAM_BUF_CAPACITY, s_buf_min_fill, (unsigned long)s_buf_underruns);
+			uint64_t measured_kbps = read_elapsed_us ? ((uint64_t)n * 8000ULL) / read_elapsed_us : 0;
+			if (s_icy_br_kbps > 0) {
+				ESP_LOGD(TAG_HTTP, "HTTP_READ: bytes=%d, elapsed=%llu ms, rate=%llu kbps (station advertises %d kbps)", n, (unsigned long long)(read_elapsed_us / 1000ULL), (unsigned long long)measured_kbps, s_icy_br_kbps);
+			} else {
+				ESP_LOGD(TAG_HTTP, "HTTP_READ: bytes=%d, elapsed=%llu ms, rate=%llu kbps", n, (unsigned long long)(read_elapsed_us / 1000ULL), (unsigned long long)measured_kbps);
+			}
+		}
 	}
 	free(chunk);
 	free(meta_buf);
@@ -582,6 +659,12 @@ done:
 		esp_http_client_close(h);
 		esp_http_client_cleanup(h);
 	}
+	//-- s_stop_requested is only set by a deliberate station switch/stop; any
+	//-- other path landing here (open failed, unresolved redirect, ICY/stream
+	//-- read failure, failed reconnect after a stall) means the stream died
+	//-- on its own, so surface that instead of leaving a stale "Switch
+	//-- Station .." or last-known artist/track on screen forever.
+	if (!s_stop_requested && s_stall_cb) s_stall_cb(true, s_stall_ctx);
 	s_fetch_running = false;
 	s_fetch_task = NULL;
 	vTaskDelete(NULL);
@@ -618,6 +701,21 @@ static void stream_task(void *arg)
 	bool warmed_up = false;
 	int good_frames = 0;
 
+	//-- Prebuffer: don't start pulling from the ring buffer until it holds a
+	//-- cushion of audio, so a brief network stall right after connecting
+	//-- doesn't immediately starve the decoder (playback is muted during
+	//-- this wait anyway, via the warm-up mechanism below)
+	uint64_t prebuf_start_us = esp_timer_get_time();
+	while (!s_stop_requested && xStreamBufferBytesAvailable(s_sb) < BUF_PREFILL_THRESHOLD) {
+		if (!s_fetch_running && xStreamBufferIsEmpty(s_sb)) break;
+		if (esp_timer_get_time() - prebuf_start_us > BUF_PREFILL_TIMEOUT_US) {
+			ESP_LOGW(TAG_BUFFER, "AUDIO_BUFFER: prebuffer timeout, starting with fill=%zu / %d", xStreamBufferBytesAvailable(s_sb), STREAM_BUF_CAPACITY);
+			break;
+		}
+		vTaskDelay(pdMS_TO_TICKS(20));
+	}
+	ESP_LOGD(TAG_BUFFER, "AUDIO_BUFFER: prebuffered %zu / %d bytes in %llu ms", xStreamBufferBytesAvailable(s_sb), STREAM_BUF_CAPACITY, (unsigned long long)((esp_timer_get_time() - prebuf_start_us) / 1000ULL));
+
 	while (!s_stop_requested) {
 		if (s_paused) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }
 		size_t want = in_cap - in_len;
@@ -627,8 +725,21 @@ static void stream_task(void *arg)
 			//-- Upstream fetch_task ended (or never started) and nothing is
 			//-- left buffered: nothing more will ever arrive
 			if (!s_fetch_running && xStreamBufferIsEmpty(s_sb)) break;
+			//-- Decoder was starved for a full 50 ms wait while fetch_task is
+			//-- still alive: the network side isn't keeping up with playback
+			if (want > 0 && xStreamBufferIsEmpty(s_sb)) {
+				s_buf_underruns++;
+				s_buf_consecutive_underruns++;
+				ESP_LOGW(TAG_BUFFER, "AUDIO_BUFFER: UNDERRUN #%lu", (unsigned long)s_buf_underruns);
+				if (s_buf_consecutive_underruns >= STALL_UNDERRUN_THRESHOLD && !s_reconnect_requested) {
+					ESP_LOGE(TAG_BUFFER, "AUDIO_BUFFER: stalled for %d consecutive underruns; requesting reconnect", STALL_UNDERRUN_THRESHOLD);
+					s_reconnect_requested = true;
+					s_buf_consecutive_underruns = 0;
+				}
+			}
 			continue;
 		}
+		s_buf_consecutive_underruns = 0;
 		in_len += n;
 
 		esp_audio_simple_dec_raw_t raw = {.buffer = in, .len = (uint32_t)in_len};
@@ -672,6 +783,7 @@ static void stream_task(void *arg)
 				if (s_muted && !warmed_up && ++good_frames >= 2) {
 					warmed_up = true;
 					s_muted = false;
+					if (s_mute_cb) s_mute_cb(false, s_mute_ctx);
 				}
 				if (!s_muted) {
 					size_t written;
@@ -748,9 +860,12 @@ esp_err_t radio_audio_init(void)
 	if (!s_queue) return ESP_ERR_NO_MEM;
 	return xTaskCreate(audio_task, "radio_audio", 4096, NULL, 6, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
-esp_err_t radio_audio_play(const radio_station_t*s){if(!s||!s_queue)return ESP_ERR_INVALID_ARG;s_muted=true;s_paused=false;audio_message_t message={.station=*s};return xQueueSend(s_queue,&message,0)==pdTRUE?ESP_OK:ESP_ERR_TIMEOUT;}
+esp_err_t radio_audio_play(const radio_station_t*s){if(!s||!s_queue)return ESP_ERR_INVALID_ARG;s_muted=true;s_paused=false;if(s_mute_cb)s_mute_cb(true,s_mute_ctx);audio_message_t message={.station=*s};return xQueueSend(s_queue,&message,0)==pdTRUE?ESP_OK:ESP_ERR_TIMEOUT;}
 void radio_audio_set_volume(int p){s_volume=p<0?0:(p>100?100:p);}
 int radio_audio_get_volume(void){return s_volume;}
 void radio_audio_set_paused(bool paused){s_paused=paused;}
 bool radio_audio_is_paused(void){return s_paused;}
+bool radio_audio_is_muted(void){return s_muted;}
 void radio_audio_set_title_callback(radio_audio_title_cb_t cb,void *ctx){s_title_cb=cb;s_title_ctx=ctx;}
+void radio_audio_set_mute_callback(radio_audio_mute_cb_t cb,void *ctx){s_mute_cb=cb;s_mute_ctx=ctx;}
+void radio_audio_set_stall_callback(radio_audio_stall_cb_t cb,void *ctx){s_stall_cb=cb;s_stall_ctx=ctx;}

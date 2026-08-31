@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define DISPLAY_STATUS_MAX 64
+#define DISPLAY_STATUS_MAX 96
 #define DISPLAY_TITLE_MAX 64
 #define DISPLAY_HEADER_H 36
 
@@ -193,38 +193,72 @@ static void draw_station_list(size_t selected, bool force_full)
 	s_cached_list_selected = selected;
 }
 
+//-- Splits on explicit '\n' first (so callers can lay out e.g. "SSID: .../IP:
+//-- ..." on separate lines), then word-wraps any resulting segment that's
+//-- still too wide for the screen. Each line is drawn horizontally centered,
+//-- and the whole block is centered vertically.
 static void draw_status(const char *status)
 {
 	uint16_t width = tft_ec11_width();
 	uint16_t height = tft_ec11_height();
 	size_t slot_chars = (width - 8) / 12;
+	const int scale = 2;
+	const int line_h = 8 * scale + 4;
 
 	tft_ec11_set_background(TFT_EC11_BLACK);
 	tft_ec11_clear();
-	tft_ec11_set_text_style(TFT_EC11_WHITE, 2);
+	tft_ec11_set_text_style(TFT_EC11_WHITE, scale);
 
 	const char *text = status ? status : "";
-	size_t len = strlen(text);
-	if (len <= slot_chars) {
-		tft_ec11_draw_text(4, (height - 16) / 2, slot_chars, text);
-		return;
+
+	char lines[4][DISPLAY_STATUS_MAX];
+	int line_count = 0;
+	const char *seg = text;
+	while (*seg && line_count < 4) {
+		const char *nl = strchr(seg, '\n');
+		size_t seg_len = nl ? (size_t)(nl - seg) : strlen(seg);
+		if (seg_len >= DISPLAY_STATUS_MAX) seg_len = DISPLAY_STATUS_MAX - 1;
+
+		if (seg_len <= slot_chars) {
+			memcpy(lines[line_count], seg, seg_len);
+			lines[line_count][seg_len] = '\0';
+			line_count++;
+		} else {
+			size_t split = slot_chars;
+			while (split > 0 && seg[split] != ' ') split--;
+			if (split == 0) split = slot_chars;
+			memcpy(lines[line_count], seg, split);
+			lines[line_count][split] = '\0';
+			line_count++;
+
+			if (line_count < 4) {
+				const char *rest = seg + split;
+				while (*rest == ' ') rest++;
+				size_t rest_len = seg_len - (size_t)(rest - seg);
+				if (rest_len >= DISPLAY_STATUS_MAX) rest_len = DISPLAY_STATUS_MAX - 1;
+				memcpy(lines[line_count], rest, rest_len);
+				lines[line_count][rest_len] = '\0';
+				line_count++;
+			}
+		}
+
+		seg = nl ? nl + 1 : seg + strlen(seg);
+	}
+	if (line_count == 0) {
+		lines[0][0] = '\0';
+		line_count = 1;
 	}
 
-	//-- Word-wrap onto a second line rather than truncating overlong status text
-	size_t split = slot_chars;
-	while (split > 0 && text[split] != ' ') split--;
-	if (split == 0) split = slot_chars;
+	int total_h = line_count * line_h;
+	int y = ((int)height - total_h) / 2;
+	if (y < 0) y = 0;
 
-	char line1[DISPLAY_STATUS_MAX];
-	size_t l1_len = split < sizeof(line1) - 1 ? split : sizeof(line1) - 1;
-	memcpy(line1, text, l1_len);
-	line1[l1_len] = '\0';
-
-	const char *rest = text + split;
-	while (*rest == ' ') rest++;
-
-	tft_ec11_draw_text(4, (height / 2) - 20, slot_chars, line1);
-	tft_ec11_draw_text(4, (height / 2) + 4, slot_chars, rest);
+	for (int i = 0; i < line_count; i++) {
+		size_t len = strlen(lines[i]);
+		int x = ((int)width - (int)len * 6 * scale) / 2;
+		if (x < 0) x = 0;
+		tft_ec11_draw_text(x, y + i * line_h, len, lines[i]);
+	}
 }
 
 static void display_task(void *argument)
