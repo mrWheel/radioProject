@@ -16,6 +16,9 @@
 
 #define WEB_GUI_MAX_CLIENTS 4
 #define WEB_GUI_WS_QUEUE_LEN 8
+//-- Mirrors station_store's own 32KB cap on stations.json, so an oversized
+//-- upload is rejected up front instead of allocating an unbounded buffer.
+#define WEB_GUI_STATIONS_IMPORT_MAX_LEN 32768
 
 static const char *TAG = "WEB_GUI";
 static httpd_handle_t s_server = NULL;
@@ -375,6 +378,109 @@ static void web_gui_ws_broadcast(cJSON *root)
     free(payload);
 }
 
+//-- Serves the raw stations.json file as a browser download (Manage Stations'
+//-- "Download Stations" button), separate from web_gui_serve_file() since it
+//-- needs Content-Disposition instead of a page content type.
+static esp_err_t stations_export_get_handler(httpd_req_t *req)
+{
+    char path[160];
+    snprintf(path, sizeof(path), "%s/stations.json", RADIO_STORAGE_PATH);
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        ESP_LOGW(TAG, "stations.json not found for export: %s", path);
+        return httpd_resp_send_404(req);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"stations.json\"");
+    char chunk[1024];
+    size_t read_len;
+    esp_err_t err = ESP_OK;
+    while ((read_len = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+        err = httpd_resp_send_chunk(req, chunk, read_len);
+        if (err != ESP_OK) {
+            break;
+        }
+    }
+    fclose(f);
+    if (err == ESP_OK) {
+        err = httpd_resp_send_chunk(req, NULL, 0);
+    }
+    return err;
+}
+
+//-- Receives an uploaded stations.json body (Manage Stations' "Upload Stations"
+//-- button) and hands it to station_store_import(), which validates before it
+//-- touches disk or the live station list. Runs on the httpd worker task, not
+//-- the WebSocket callback, so the blocking read/parse/file-write here is fine.
+static esp_err_t stations_import_post_handler(httpd_req_t *req)
+{
+    if (req->content_len == 0 || req->content_len > WEB_GUI_STATIONS_IMPORT_MAX_LEN) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                    "stations.json must be a non-empty file of at most 32KB");
+    }
+
+    size_t content_len = (size_t)req->content_len;
+    char *buf = malloc(content_len + 1);
+    if (!buf) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+    }
+
+    size_t received_total = 0;
+    while (received_total < content_len) {
+        int received = httpd_req_recv(req, buf + received_total, content_len - received_total);
+        if (received <= 0) {
+            free(buf);
+            if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+                httpd_resp_send_408(req);
+            } else {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed reading upload body");
+            }
+            return ESP_FAIL;
+        }
+        received_total += (size_t)received;
+    }
+    buf[content_len] = '\0';
+
+    esp_err_t import_err = station_store_import(buf);
+    free(buf);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *response_data = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "data", response_data);
+
+    if (import_err == ESP_OK) {
+        s_current_station_index = web_gui_station_index(s_current_station_index);
+        cJSON_AddStringToObject(root, "type", "state");
+        web_gui_fill_state(response_data);
+
+        //-- Every other connected browser, plus the physical TFT/EC11 state,
+        //-- must also pick up the new station list right away.
+        cJSON *broadcast = cJSON_CreateObject();
+        cJSON *broadcast_data = cJSON_CreateObject();
+        cJSON_AddStringToObject(broadcast, "type", "state");
+        cJSON_AddItemToObject(broadcast, "data", broadcast_data);
+        web_gui_fill_state(broadcast_data);
+        web_gui_ws_broadcast(broadcast);
+        cJSON_Delete(broadcast);
+
+        if (s_state_applied_cb) {
+            s_state_applied_cb(s_current_station_index, radio_audio_get_volume(), s_state_applied_ctx);
+        }
+    } else {
+        cJSON_AddStringToObject(root, "type", "error");
+        cJSON_AddStringToObject(response_data, "message",
+                                 import_err == ESP_ERR_NOT_FOUND
+                                     ? "No valid stations found in uploaded file"
+                                     : "Unable to import stations.json");
+    }
+
+    esp_err_t err = web_gui_response_json(req, root);
+    cJSON_Delete(root);
+    return err;
+}
+
 //-- Runs the queued WebSocket commands outside the WebSocket receive callback,
 //-- since station changes and file writes may block on network/filesystem I/O.
 static void web_gui_ws_worker_task(void *arg)
@@ -524,6 +630,20 @@ static const httpd_uri_t uri_post_command = {
     .user_ctx = NULL
 };
 
+static const httpd_uri_t uri_get_stations_export = {
+    .uri = "/api/stations/export",
+    .method = HTTP_GET,
+    .handler = stations_export_get_handler,
+    .user_ctx = NULL
+};
+
+static const httpd_uri_t uri_post_stations_import = {
+    .uri = "/api/stations/import",
+    .method = HTTP_POST,
+    .handler = stations_import_post_handler,
+    .user_ctx = NULL
+};
+
 static const httpd_uri_t uri_ws = {
     .uri = "/ws",
     .method = HTTP_GET,
@@ -538,16 +658,30 @@ esp_err_t web_gui_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_open_sockets = WEB_GUI_MAX_CLIENTS;
+    //-- HTTPD_DEFAULT_CONFIG()'s max_uri_handlers is 8; this server registers
+    //-- 9 (root, index.html, style.css, app.js, /api/state, /api/command,
+    //-- /api/stations/export, /api/stations/import, /ws). Leave headroom for
+    //-- future endpoints instead of sizing exactly to the current count.
+    config.max_uri_handlers = 12;
     esp_err_t err = httpd_start(&s_server, &config);
     if (err != ESP_OK) return err;
 
-    httpd_register_uri_handler(s_server, &uri_get_root);
-    httpd_register_uri_handler(s_server, &uri_get_index);
-    httpd_register_uri_handler(s_server, &uri_get_style);
-    httpd_register_uri_handler(s_server, &uri_get_app_js);
-    httpd_register_uri_handler(s_server, &uri_get_state);
-    httpd_register_uri_handler(s_server, &uri_post_command);
-    httpd_register_uri_handler(s_server, &uri_ws);
+    //-- httpd_register_uri_handler() fails silently for the caller if left
+    //-- unchecked (e.g. when max_uri_handlers is too small for the handler
+    //-- count), which previously dropped /ws registration without any error
+    //-- at startup and only surfaced later as "URI '/ws' not found" at runtime.
+    static const httpd_uri_t *const k_uri_handlers[] = {
+        &uri_get_root, &uri_get_index, &uri_get_style, &uri_get_app_js,
+        &uri_get_state, &uri_post_command, &uri_get_stations_export,
+        &uri_post_stations_import, &uri_ws,
+    };
+    for (size_t i = 0; i < sizeof(k_uri_handlers) / sizeof(k_uri_handlers[0]); ++i) {
+        esp_err_t reg_err = httpd_register_uri_handler(s_server, k_uri_handlers[i]);
+        if (reg_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to register URI handler for %s: %s",
+                     k_uri_handlers[i]->uri, esp_err_to_name(reg_err));
+        }
+    }
 
     s_ws_queue = xQueueCreate(WEB_GUI_WS_QUEUE_LEN, sizeof(web_gui_ws_cmd_t));
     if (!s_ws_queue) {

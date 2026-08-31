@@ -42,6 +42,11 @@
   <div id="stationModal" class="modal">
     <div class="modal-card">
       <h3 id="stationModalTitle">Manage Stations</h3>
+      <div class="modal-file-actions">
+        <button id="downloadStationsBtn" class="control-btn" type="button">Download Stations to PC</button>
+        <button id="uploadStationsBtn" class="control-btn" type="button">Upload Stations from PC</button>
+        <input id="stationsFileInput" type="file" accept="application/json,.json" style="display:none" />
+      </div>
       <div class="field">
         <label for="stationNameInput">Station Name</label>
         <input id="stationNameInput" type="text" maxlength="63" disabled />

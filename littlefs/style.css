@@ -31,5 +31,6 @@ input[type=range] { width:100%; accent-color:var(--accent); }
 input, select { width:100%; min-height:44px; border-radius:12px; border:1px solid rgba(15,23,42,0.15); padding:10px 12px; font:inherit; }
 input:disabled, select:disabled { opacity:.6; background:rgba(0,0,0,0.03); }
 .modal-actions { display:flex; justify-content:flex-end; gap:12px; margin-top:16px; flex-wrap:wrap; }
+.modal-file-actions { display:flex; justify-content:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
 .modal-close-row { display:flex; justify-content:flex-end; margin-top:8px; }
-@media (max-width:560px) { body { padding:12px; } .content { padding:16px; } .nav-row, .modal-actions, .slider-row { flex-direction:column; } .modal-actions button { width:100%; } }
+@media (max-width:560px) { body { padding:12px; } .content { padding:16px; } .nav-row, .modal-actions, .modal-file-actions, .slider-row { flex-direction:column; } .modal-actions button, .modal-file-actions button { width:100%; } }

@@ -100,6 +100,35 @@ document.getElementById('saveStationBtn').addEventListener('click', (e) => {
   setManageMode('view');
   document.getElementById('stationModal').classList.remove('open');
 });
+document.getElementById('downloadStationsBtn').addEventListener('click', (e) => {
+  markPressed(e.currentTarget);
+  const link = document.createElement('a');
+  link.href = '/api/stations/export';
+  link.download = 'stations.json';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  resolvePending();
+});
+document.getElementById('uploadStationsBtn').addEventListener('click', (e) => { markPressed(e.currentTarget); resolvePending(); document.getElementById('stationsFileInput').click(); });
+document.getElementById('stationsFileInput').addEventListener('change', async (event) => {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const res = await fetch('/api/stations/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: text });
+    const msg = await res.json();
+    if (msg.type === 'state' && msg.data) {
+      applyState(msg.data);
+      setStatus('Stations imported');
+    } else {
+      setStatus((msg.data && msg.data.message) ? msg.data.message : 'Import failed');
+    }
+  } catch (e) {
+    setStatus('Import failed');
+  }
+});
 document.getElementById('volumeSlider').addEventListener('input', (event) => {
   const value = Number(event.target.value);
   document.getElementById('volumeValue').textContent = value + '%';
