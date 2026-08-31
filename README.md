@@ -67,7 +67,7 @@ Station names and mode changes are also printed to the serial monitor. The compa
 
 ### Audio pipeline
 
-`radio_audio` runs two pinned tasks connected by a 64 KB PSRAM ring buffer, so a network stall can never stall the I2S feed directly:
+`radio_audio` runs two pinned tasks connected by a 128 KB PSRAM ring buffer, so a network stall can never stall the I2S feed directly. Playback only starts once the buffer is at least 50% full (`BUF_PREFILL_THRESHOLD`), trading a slightly longer startup wait for more margin against early network hiccups:
 
 - `radio_fetch` (core 0, alongside the Wi-Fi driver task): owns the HTTP(S)/ICY connection, strips interleaved ICY `StreamTitle` metadata, and pushes raw compressed audio bytes into the buffer.
 - `radio_stream` (core 1): pulls bytes from the buffer, decodes MP3/AAC via `esp_audio_simple_dec`, applies bounded software volume, and writes PCM to I2S.

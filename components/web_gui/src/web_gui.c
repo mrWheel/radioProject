@@ -305,6 +305,11 @@ static esp_err_t app_js_get_handler(httpd_req_t *req)
     return web_gui_serve_file(req, "app.js", "application/javascript");
 }
 
+static esp_err_t favicon_get_handler(httpd_req_t *req)
+{
+    return web_gui_serve_file(req, "favicon.ico", "image/x-icon");
+}
+
 static esp_err_t state_get_handler(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
@@ -616,6 +621,13 @@ static const httpd_uri_t uri_get_app_js = {
     .user_ctx = NULL
 };
 
+static const httpd_uri_t uri_get_favicon = {
+    .uri = "/favicon.ico",
+    .method = HTTP_GET,
+    .handler = favicon_get_handler,
+    .user_ctx = NULL
+};
+
 static const httpd_uri_t uri_get_state = {
     .uri = "/api/state",
     .method = HTTP_GET,
@@ -659,9 +671,10 @@ esp_err_t web_gui_init(void)
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_open_sockets = WEB_GUI_MAX_CLIENTS;
     //-- HTTPD_DEFAULT_CONFIG()'s max_uri_handlers is 8; this server registers
-    //-- 9 (root, index.html, style.css, app.js, /api/state, /api/command,
-    //-- /api/stations/export, /api/stations/import, /ws). Leave headroom for
-    //-- future endpoints instead of sizing exactly to the current count.
+    //-- 10 (root, index.html, style.css, app.js, favicon.ico, /api/state,
+    //-- /api/command, /api/stations/export, /api/stations/import, /ws).
+    //-- Leave headroom for future endpoints instead of sizing exactly to
+    //-- the current count.
     config.max_uri_handlers = 12;
     esp_err_t err = httpd_start(&s_server, &config);
     if (err != ESP_OK) return err;
@@ -672,8 +685,8 @@ esp_err_t web_gui_init(void)
     //-- at startup and only surfaced later as "URI '/ws' not found" at runtime.
     static const httpd_uri_t *const k_uri_handlers[] = {
         &uri_get_root, &uri_get_index, &uri_get_style, &uri_get_app_js,
-        &uri_get_state, &uri_post_command, &uri_get_stations_export,
-        &uri_post_stations_import, &uri_ws,
+        &uri_get_favicon, &uri_get_state, &uri_post_command,
+        &uri_get_stations_export, &uri_post_stations_import, &uri_ws,
     };
     for (size_t i = 0; i < sizeof(k_uri_handlers) / sizeof(k_uri_handlers[0]); ++i) {
         esp_err_t reg_err = httpd_register_uri_handler(s_server, k_uri_handlers[i]);

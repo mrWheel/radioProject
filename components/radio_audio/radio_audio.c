@@ -48,7 +48,7 @@ static volatile bool s_reconnect_requested = false;
 //-- Ring buffer must hold at least this many bytes before stream_task starts
 //-- decoding, so a brief network stall right after connecting doesn't
 //-- immediately starve playback (see AUDIO_BUFFER UNDERRUN diagnostics)
-#define BUF_PREFILL_THRESHOLD (STREAM_BUF_CAPACITY/4)
+#define BUF_PREFILL_THRESHOLD (STREAM_BUF_CAPACITY/2)
 #define BUF_PREFILL_TIMEOUT_US (5*1000*1000)
 //-- ~5s of continuous starvation (underruns fire roughly every 50ms while
 //-- fetch_task is still alive but the buffer stays empty) before giving up on
