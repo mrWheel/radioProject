@@ -1,6 +1,6 @@
 # Build log for ESP-IDF
 
-Generated: 2026-09-01T11:19:44
+Generated: 2026-09-01T12:23:06
 
 $ /Users/willema/.espressif/v6.0.2/esp-idf/tools/idf.py build
 Executing action: all (aliases: build)
@@ -11,8 +11,7 @@ radioProject.bin binary size 0x1aa950 bytes. Smallest app partition is 0x200000 
 [2/5] Performing build step for 'bootloader'
 [1/1] cd /Users/willema/Documents/espidfProjects.nosync/radioProject/build/bootloader && /Users/willema/.espressif/tools/python/v6.0.2/venv/bin/python /Users/willema/.espressif/v6.0.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /Users/willema/Documents/espidfProjects.nosync/radioProject/build/bootloader/bootloader.bin
 Bootloader binary size 0x5240 bytes. 0x2dc0 bytes (36%) free.
-[3/5] No install step for 'bootloader'
-[4/5] cd /Users/willema/Documents/espidfProjects.nosync/radioProject/build/esp-idf/radio_storage && /Users/willema/Documents/espidfProjects.nosync/radioProject/build/littlefs_py_venv/bin/littlefs-python create /Users/willema/Documents/espidfProjects.nosync/radioProject/littlefs /Users/willema/Documents/espidfProjects.nosync/radioProject/build/storage.bin -v --fs-size=0x1f0000 --name-max=64 --block-size=4096
+[3/5] cd /Users/willema/Documents/espidfProjects.nosync/radioProject/build/esp-idf/radio_storage && /Users/willema/Documents/espidfProjects.nosync/radioProject/build/littlefs_py_venv/bin/littlefs-python create /Users/willema/Documents/espidfProjects.nosync/radioProject/littlefs /Users/willema/Documents/espidfProjects.nosync/radioProject/build/storage.bin -v --fs-size=0x1f0000 --name-max=64 --block-size=4096
 LittleFS Configuration:
   Block Size:       4096  /  0x1000
   Image Size:    2031616  /  0x1F0000
@@ -24,6 +23,7 @@ Adding File:      index.html
 Adding File:      stations.json
 Adding File:      style.css
 Adding File:      app.js
+[4/5] No install step for 'bootloader'
 [5/5] Completed 'bootloader'
 
 Project build complete. To flash, run:
