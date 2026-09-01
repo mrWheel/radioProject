@@ -42,6 +42,8 @@ Build and maintain a production-oriented VS Code ESP-IDF internet-radio firmware
     - `web_gui_serve_file()` sends `Cache-Control: no-store` on every static asset (`index.html`/`style.css`/`app.js`/`favicon.ico`): this UI changes across dev builds, and without it a browser that already visited the device's IP would silently keep running a stale cached copy indefinitely, diverging in behavior from a browser that never cached it.
     - `WEB_GUI_MAX_CLIENTS` (used for httpd's `config.max_open_sockets`) is 8, not 4: a single browser's initial page load alone opens ~5 concurrent connections (`index.html`, `style.css`, `app.js`, `favicon.ico`, `/ws`), so 4 was already too tight for one client and silently starved a second browser's page load. `CONFIG_LWIP_MAX_SOCKETS` is 16, since that pool is shared system-wide with `radio_audio`'s own long-lived streaming socket.
 
+18. The stations Download/Upload buttons (requirement 16) each confirm success to the user with a popup (`infoModal` in `littlefs/index.html`, `showInfoModal()`/`hideInfoModal()` in `littlefs/app.js`): shown after a successful download trigger or a successful import response, with an **OK** button that dismisses it immediately and an automatic dismiss after `INFO_MODAL_AUTO_DISMISS_MS` (3s) if the user doesn't click it. This reuses the existing `.modal`/`.modal-card`/`.modal-actions` styling from the takeover/stall popup (requirement 17) rather than introducing new CSS.
+
 ## Hardware defaults
 
 - TFT BL 2, RST 4, CS 5, SCLK 12, MOSI 11, DC 15; 320×240

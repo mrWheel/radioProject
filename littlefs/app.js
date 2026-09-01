@@ -28,6 +28,21 @@ function showConnectionModal(title) {
   document.getElementById('takeoverModal').classList.add('open');
 }
 
+const INFO_MODAL_AUTO_DISMISS_MS = 3000;
+let infoModalTimer = null;
+
+function showInfoModal(title) {
+  document.getElementById('infoModalTitle').textContent = title;
+  document.getElementById('infoModal').classList.add('open');
+  if (infoModalTimer) clearTimeout(infoModalTimer);
+  infoModalTimer = setTimeout(hideInfoModal, INFO_MODAL_AUTO_DISMISS_MS);
+}
+
+function hideInfoModal() {
+  document.getElementById('infoModal').classList.remove('open');
+  if (infoModalTimer) { clearTimeout(infoModalTimer); infoModalTimer = null; }
+}
+
 function connectWs() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
   ws.onopen = () => { wsReady = true; lastMessageAt = Date.now(); setStatus('Connected'); send('getState'); };
@@ -138,7 +153,9 @@ document.getElementById('downloadStationsBtn').addEventListener('click', (e) => 
   link.click();
   document.body.removeChild(link);
   resolvePending();
+  showInfoModal('Stations downloaded successfully');
 });
+document.getElementById('infoModalOkBtn').addEventListener('click', hideInfoModal);
 document.getElementById('uploadStationsBtn').addEventListener('click', (e) => { markPressed(e.currentTarget); resolvePending(); document.getElementById('stationsFileInput').click(); });
 document.getElementById('stationsFileInput').addEventListener('change', async (event) => {
   const file = event.target.files[0];
@@ -151,6 +168,7 @@ document.getElementById('stationsFileInput').addEventListener('change', async (e
     if (msg.type === 'state' && msg.data) {
       applyState(msg.data);
       setStatus('Stations imported');
+      showInfoModal('Stations uploaded successfully');
     } else {
       setStatus((msg.data && msg.data.message) ? msg.data.message : 'Import failed');
     }
