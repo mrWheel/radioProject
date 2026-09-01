@@ -13,8 +13,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
-#define WEB_GUI_MAX_CLIENTS 4
+//-- Not just "WS clients": this caps httpd's total concurrent sockets
+//-- (also used for config.max_open_sockets below). A single browser page
+//-- load alone opens ~5 concurrent connections (index.html, style.css,
+//-- app.js, favicon.ico, /ws), so 4 was too low even for one client and
+//-- silently starved a 2nd browser's page load (stuck on "Loading.." since
+//-- app.js itself never finished fetching).
+#define WEB_GUI_MAX_CLIENTS 8
 #define WEB_GUI_WS_QUEUE_LEN 8
 //-- Mirrors station_store's own 32KB cap on stations.json, so an oversized
 //-- upload is rejected up front instead of allocating an unbounded buffer.
@@ -30,6 +37,8 @@ static QueueHandle_t s_ws_queue = NULL;
 static TaskHandle_t s_ws_worker_task = NULL;
 static web_gui_state_applied_cb_t s_state_applied_cb = NULL;
 static void *s_state_applied_ctx = NULL;
+//-- Only one browser may be connected to /ws at a time; -1 means no client.
+static int s_active_ws_fd = -1;
 
 //-- Commands received over the /ws endpoint are queued here so the WebSocket
 //-- callback never performs long-running station/filesystem operations itself.
@@ -69,6 +78,12 @@ static esp_err_t web_gui_serve_file(httpd_req_t *req, const char *filename, cons
     }
 
     httpd_resp_set_type(req, content_type);
+    //-- Firmware/UI assets change across dev builds; without this, a browser
+    //-- that already visited this device's IP keeps serving a stale cached
+    //-- index.html/app.js/style.css forever, silently diverging in behavior
+    //-- from a browser that never cached it (this previously left one client
+    //-- stuck showing old UI/logic while another worked fine).
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     char chunk[1024];
     size_t read_len;
     esp_err_t err = ESP_OK;
@@ -506,10 +521,59 @@ static void web_gui_ws_worker_task(void *arg)
     }
 }
 
+//-- Only one browser session may control the radio at a time. Checked on
+//-- every /ws data frame (not ws_post_handshake_cb: registering that hook
+//-- disrupted the normal WS receive/reply flow in this IDF build, leaving
+//-- the new client's getState reply unanswered and stuck retrying forever).
+//-- A no-op once s_active_ws_fd already matches the calling fd.
+static void web_gui_ws_check_takeover(httpd_req_t *req)
+{
+    httpd_handle_t server = req->handle;
+    int new_fd = httpd_req_to_sockfd(req);
+    if (new_fd == s_active_ws_fd) {
+        return;
+    }
+
+    if (s_active_ws_fd >= 0) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON *data = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "type", "disconnected");
+        cJSON_AddItemToObject(root, "data", data);
+        cJSON_AddStringToObject(data, "message", "Connection lost or taken over");
+        char *payload = cJSON_PrintUnformatted(root);
+        if (payload) {
+            httpd_ws_frame_t pkt = {0};
+            pkt.type = HTTPD_WS_TYPE_TEXT;
+            pkt.payload = (uint8_t *)payload;
+            pkt.len = strlen(payload);
+            httpd_ws_send_frame_async(server, s_active_ws_fd, &pkt);
+            free(payload);
+        }
+        cJSON_Delete(root);
+        ESP_LOGI(TAG, "New WS client fd=%d taking over from fd=%d", new_fd, s_active_ws_fd);
+        httpd_sess_trigger_close(server, s_active_ws_fd);
+    }
+    s_active_ws_fd = new_fd;
+    ESP_LOGI(TAG, "Active WS client is now fd=%d", new_fd);
+}
+
+//-- Clears the tracked active client when its socket actually closes, so a
+//-- reconnect after a normal disconnect isn't mistaken for a takeover.
+static void web_gui_httpd_close_fn(httpd_handle_t hd, int sockfd)
+{
+    (void)hd;
+    if (sockfd == s_active_ws_fd) {
+        s_active_ws_fd = -1;
+    }
+    close(sockfd);
+}
+
 //-- WebSocket data handler for /ws. Only receives, validates and queues commands;
 //-- the actual station/volume/file work happens in web_gui_ws_worker_task.
 static esp_err_t ws_handler(httpd_req_t *req)
 {
+    web_gui_ws_check_takeover(req);
+
     httpd_ws_frame_t ws_pkt = {0};
     ws_pkt.type = HTTPD_WS_TYPE_TEXT;
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
@@ -548,6 +612,19 @@ static esp_err_t ws_handler(httpd_req_t *req)
         return web_gui_ws_reply_error(req, "Missing command type");
     }
     const char *type = type_obj->valuestring;
+
+    //-- Answered inline, same as getState: lets the browser's heartbeat
+    //-- confirm the connection is alive during idle periods (no station/
+    //-- volume change to broadcast), without touching the command queue
+    //-- or any audio-path state.
+    if (strcmp(type, "ping") == 0) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "type", "pong");
+        esp_err_t err = web_gui_ws_send_json(req, root);
+        cJSON_Delete(root);
+        cJSON_Delete(msg);
+        return err;
+    }
 
     if (strcmp(type, "getState") == 0) {
         cJSON *root = cJSON_CreateObject();
@@ -670,6 +747,9 @@ esp_err_t web_gui_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.uri_match_fn = httpd_uri_match_wildcard;
     config.max_open_sockets = WEB_GUI_MAX_CLIENTS;
+    //-- Tracks when the single allowed WS client's socket actually closes,
+    //-- so a takeover isn't confused with a normal disconnect/reconnect.
+    config.close_fn = web_gui_httpd_close_fn;
     //-- HTTPD_DEFAULT_CONFIG()'s max_uri_handlers is 8; this server registers
     //-- 10 (root, index.html, style.css, app.js, favicon.ico, /api/state,
     //-- /api/command, /api/stations/export, /api/stations/import, /ws).
@@ -769,5 +849,6 @@ void web_gui_deinit(void)
         httpd_stop(s_server);
         s_server = NULL;
     }
+    s_active_ws_fd = -1;
 }
 

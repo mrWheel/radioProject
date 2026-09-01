@@ -30,4 +30,9 @@ CONFIG_WIFI_PROV_AP_SSID="Internet-Radio-Setup"
 CONFIG_WIFI_PROV_AP_PASSWORD=""
 CONFIG_WIFI_PROV_PORTAL_TIMEOUT=0
 CONFIG_HTTPD_WS_SUPPORT=y
+#-- Shared system-wide with radio_audio's own streaming HTTP socket; the
+#-- default of 10 could be exhausted just by one browser's page load (5
+#-- concurrent httpd connections) plus the audio stream, starving new
+#-- connections (e.g. a 2nd browser stuck on "Loading..").
+CONFIG_LWIP_MAX_SOCKETS=16
 

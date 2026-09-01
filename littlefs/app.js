@@ -8,15 +8,44 @@ function markPressed(btn) { if (!btn) return; btn.classList.remove('done'); btn.
 function resolvePending() { pendingButtons.forEach((btn) => { btn.classList.remove('pressed'); btn.classList.add('done'); setTimeout(() => btn.classList.remove('done'), 400); }); pendingButtons = []; }
 function send(type, data, btn) { markPressed(btn); if (ws && wsReady) { ws.send(JSON.stringify({ type, data })); } else { resolvePending(); setStatus('Not connected'); } }
 
+//-- Halts once either the server explicitly reports a takeover, or the
+//-- watchdog below decides the connection is stalled; either way, auto
+//-- reconnect stops and the user must press Reconnect.
+let connectionHalted = false;
+//-- Timestamp of the last WS message received (any type, including pong),
+//-- used by the stall watchdog. Reset on open too, so a connection that
+//-- never answers getState is caught the same way as one that goes silent
+//-- later. The server only broadcasts state on actual changes, so without
+//-- the active ping/pong heartbeat below an idle-but-healthy connection
+//-- would be wrongly flagged as stalled.
+let lastMessageAt = Date.now();
+const PING_INTERVAL_MS = 4000;
+const STALL_TIMEOUT_MS = 9000;
+
+function showConnectionModal(title) {
+  connectionHalted = true;
+  document.getElementById('takeoverModalTitle').textContent = title;
+  document.getElementById('takeoverModal').classList.add('open');
+}
+
 function connectWs() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
-  ws.onopen = () => { wsReady = true; setStatus('Connected'); send('getState'); };
-  ws.onclose = () => { wsReady = false; setStatus('Reconnecting…'); setTimeout(connectWs, 1000); };
+  ws.onopen = () => { wsReady = true; lastMessageAt = Date.now(); setStatus('Connected'); send('getState'); };
+  ws.onclose = () => {
+    wsReady = false;
+    if (connectionHalted) return;
+    setStatus('Reconnecting…');
+    setTimeout(connectWs, 1000);
+  };
   ws.onerror = () => { ws.close(); };
   ws.onmessage = (event) => {
+    lastMessageAt = Date.now();
     try {
       const msg = JSON.parse(event.data);
-      if (msg.type === 'error') {
+      if (msg.type === 'disconnected') {
+        showConnectionModal('Connection lost or taken over');
+        return;
+      } else if (msg.type === 'error') {
         setStatus(msg.data && msg.data.message ? msg.data.message : 'Error');
       } else if (msg.data) {
         applyState(msg.data);
@@ -139,5 +168,25 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'ArrowUp') { event.preventDefault(); send('stationPrevious', null, document.getElementById('prevBtn')); }
   if (event.key === 'ArrowDown') { event.preventDefault(); send('stationNext', null, document.getElementById('nextBtn')); }
 });
+document.getElementById('reconnectBtn').addEventListener('click', () => location.reload());
+
+//-- Active heartbeat: the server only broadcasts state on real changes, so
+//-- during idle periods this is the only traffic keeping lastMessageAt
+//-- fresh. Answered inline by the server (not queued), so it never competes
+//-- with or delays the audio path.
+setInterval(() => {
+  if (wsReady && !connectionHalted) send('ping');
+}, PING_INTERVAL_MS);
+
+//-- Stall watchdog: covers both "never got a first reply" (stuck on Loading)
+//-- and "went silent after connecting" (dead socket the browser hasn't
+//-- noticed yet) - both leave wsReady/onclose unaware anything is wrong.
+setInterval(() => {
+  if (connectionHalted) return;
+  if (Date.now() - lastMessageAt > STALL_TIMEOUT_MS) {
+    showConnectionModal('Connection stalled');
+    if (ws) { try { ws.close(); } catch (e) { /* already closed */ } }
+  }
+}, 2000);
 
 connectWs();
