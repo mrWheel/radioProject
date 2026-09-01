@@ -1,0 +1,10 @@
+{
+  "name": "radioProject",
+  "long_name_nl": "ESP32-S3 Internetradio met TFT en webinterface",
+  "long_name_en": "ESP32-S3 Internet Radio with TFT and Web Interface",
+  "description_en": "Native ESP-IDF firmware for an ESP32-S3 internet radio with EC11 controls, TFT display, LittleFS station storage, MP3/AAC playback and a live web interface.",
+  "description_nl": "Native ESP-IDF-firmware voor een ESP32-S3 internetradio met EC11-bediening, TFT-scherm, LittleFS-zenderopslag, MP3/AAC-weergave en een live webinterface.",
+  "github_url": "https://github.com/mrWheel/radioProject",
+  "post_url": "https://flasher.aandewiel.nl/",
+  "image": "radioProject.png"
+}

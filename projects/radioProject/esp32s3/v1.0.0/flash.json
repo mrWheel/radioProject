@@ -1,0 +1,23 @@
+{
+  "board": "esp32s3",
+  "soc": "esp32s3",
+  "version": "v1.0.0",
+  "flash_files": [
+    {
+      "offset": "0x0",
+      "file": "bootloader.bin"
+    },
+    {
+      "offset": "0x8000",
+      "file": "partitions.bin"
+    },
+    {
+      "offset": "0x210000",
+      "file": "firmware.bin"
+    },
+    {
+      "offset": "0x10000",
+      "file": "radioProject.bin"
+    }
+  ]
+}
