@@ -18,7 +18,8 @@
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
-typedef struct { radio_station_t station; } audio_message_t;
+typedef struct { radio_station_t station; uint32_t session_id; } audio_message_t;
+typedef struct { radio_station_t station; uint32_t session_id; } audio_session_t;
 static const char *TAG = "RADIO";
 static const char *TAG_HTTP = "RADIO_HTTP";
 static const char *TAG_TLS = "RADIO_TLS";
@@ -33,7 +34,7 @@ static const char *TAG_BUFFER = "RADIO_BUFFER";
 //-- Buffer/HTTP-read diagnostics are summarized on this interval instead of
 //-- per-chunk, so normal playback doesn't flood the monitor
 #define BUF_LOG_INTERVAL_US (5*1000*1000)
-static i2s_chan_handle_t s_tx; static TaskHandle_t s_stream_task; static TaskHandle_t s_fetch_task; static QueueHandle_t s_queue; static radio_station_t s_station; static volatile int s_volume=60; static volatile bool s_stream_running; static volatile bool s_fetch_running; static volatile bool s_stop_requested;
+static i2s_chan_handle_t s_tx; static TaskHandle_t s_stream_task; static TaskHandle_t s_fetch_task; static QueueHandle_t s_queue; static volatile int s_volume=60; static volatile bool s_stream_running; static volatile bool s_fetch_running; static volatile bool s_stop_requested; static volatile uint32_t s_active_session_id;
 static StreamBufferHandle_t s_sb; static StaticStreamBuffer_t s_sb_struct; static uint8_t *s_sb_storage;
 static volatile uint32_t s_buf_underruns = 0; static volatile size_t s_buf_min_fill = SIZE_MAX; static uint64_t s_buf_last_log_us = 0;
 static volatile int s_icy_br_kbps = -1;
@@ -49,7 +50,6 @@ static volatile bool s_reconnect_requested = false;
 //-- decoding, so a brief network stall right after connecting doesn't
 //-- immediately starve playback (see AUDIO_BUFFER UNDERRUN diagnostics)
 #define BUF_PREFILL_THRESHOLD (STREAM_BUF_CAPACITY/2)
-#define BUF_PREFILL_TIMEOUT_US (5*1000*1000)
 //-- ~5s of continuous starvation (underruns fire roughly every 50ms while
 //-- fetch_task is still alive but the buffer stays empty) before giving up on
 //-- the current connection and reconnecting
@@ -65,6 +65,11 @@ static radio_audio_title_cb_t s_title_cb; static void *s_title_ctx;
 static radio_audio_mute_cb_t s_mute_cb; static void *s_mute_ctx;
 static radio_audio_stall_cb_t s_stall_cb; static void *s_stall_ctx;
 static void apply_volume(int16_t *pcm,size_t samples){int v=s_volume;for(size_t i=0;i<samples;i++)pcm[i]=(int16_t)(((int32_t)pcm[i]*v)/100);}
+
+static bool session_is_active(uint32_t session_id)
+{
+	return session_id == s_active_session_id;
+}
 
 //-- Blocks until exactly `len` bytes are read (a single esp_http_client_read()
 //-- call may return short of a full ICY metadata block)
@@ -318,11 +323,11 @@ static void log_retry_event(int attempt, int max_attempts, const char *url, cons
 	if (reason) ESP_LOGW(TAG_HTTP, "Retry reason: %s", reason);
 }
 
-static void log_teardown_summary(const radio_station_t *station, const char *reason, size_t bytes_received, int http_code, uint64_t elapsed_us)
+static void log_teardown_summary(const radio_station_t *station, const char *final_url, const char *reason, size_t bytes_received, int http_code, uint64_t elapsed_us)
 {
 	ESP_LOGW(TAG, "Stream ended");
 	ESP_LOGW(TAG, "Station       : %s", station ? station->name : "unknown");
-	ESP_LOGW(TAG, "Final URL     : %s", station ? station->url : "unknown");
+	ESP_LOGW(TAG, "Final URL     : %s", final_url ? final_url : "unknown");
 	ESP_LOGW(TAG, "Bytes received: %zu", bytes_received);
 	ESP_LOGW(TAG, "Uptime        : %llu ms", (unsigned long long)(elapsed_us / 1000ULL));
 	ESP_LOGW(TAG, "Last HTTP code: %d", http_code);
@@ -399,7 +404,7 @@ static esp_http_client_handle_t create_http_client(const char *url, bool verify_
 //-- of refusing to open. On success returns the open handle and reports
 //-- whether TLS was verified via `*out_tls_verified`; on failure returns
 //-- NULL and copies a short reason into `reason_out` (already logged).
-static esp_http_client_handle_t open_with_retries(const char *url, bool *out_tls_verified, char *reason_out, size_t reason_cap)
+static esp_http_client_handle_t open_with_retries(const char *url, uint32_t session_id, bool *out_tls_verified, char *reason_out, size_t reason_cap)
 {
 	bool is_https = strncmp(url, "https://", 8) == 0;
 	bool tls_verified = true;
@@ -417,7 +422,18 @@ static esp_http_client_handle_t open_with_retries(const char *url, bool *out_tls
 	const int verified_attempts = 3;
 	const int total_attempts = is_https ? verified_attempts + 1 : verified_attempts;
 	for (int attempt = 1; attempt <= total_attempts; ++attempt) {
+		if (s_stop_requested || !session_is_active(session_id)) {
+			strlcpy(reason_out, "station switched", reason_cap);
+			esp_http_client_cleanup(h);
+			return NULL;
+		}
 		if (esp_http_client_open(h, 0) == ESP_OK) {
+			if (s_stop_requested || !session_is_active(session_id)) {
+				esp_http_client_close(h);
+				esp_http_client_cleanup(h);
+				strlcpy(reason_out, "station switched", reason_cap);
+				return NULL;
+			}
 			if (is_https && !tls_verified) ESP_LOGW(TAG_TLS, "Connected without TLS certificate verification (bundle rejected server's certificate chain)");
 			*out_tls_verified = tls_verified;
 			return h;
@@ -445,7 +461,7 @@ static esp_http_client_handle_t open_with_retries(const char *url, bool *out_tls
 		}
 		if (attempt < total_attempts) {
 			log_retry_event(attempt, total_attempts, url, err != 0 ? strerror(err) : "connection failed");
-			vTaskDelay(pdMS_TO_TICKS(2000));
+			for (int wait = 0; wait < 20 && !s_stop_requested && session_is_active(session_id); ++wait) vTaskDelay(pdMS_TO_TICKS(100));
 			continue;
 		}
 		ESP_LOGE(TAG_HTTP, "HTTP open failed for %s", url);
@@ -465,8 +481,10 @@ static esp_http_client_handle_t open_with_retries(const char *url, bool *out_tls
 //-- stream_task's decode+I2S loop.
 static void fetch_task(void *arg)
 {
-	(void)arg;
-	radio_station_t station = s_station;
+	audio_session_t session = *(audio_session_t *)arg;
+	free(arg);
+	if (!session_is_active(session.session_id)) vTaskDelete(NULL);
+	radio_station_t station = session.station;
 	bool first_payload_logged = false;
 	uint64_t start_us = esp_timer_get_time();
 	size_t bytes_received = 0;
@@ -477,8 +495,8 @@ static void fetch_task(void *arg)
 	s_icy_br_kbps = -1;
 	s_buf_consecutive_underruns = 0;
 	s_reconnect_requested = false;
-	if (s_title_cb) s_title_cb("", s_title_ctx);
-	if (s_stall_cb) s_stall_cb(false, s_stall_ctx);
+	if (session_is_active(session.session_id) && s_title_cb) s_title_cb("", s_title_ctx);
+	if (session_is_active(session.session_id) && s_stall_cb) s_stall_cb(false, s_stall_ctx);
 	log_station_banner(&station);
 	char current_url[RADIO_URL_MAX];
 	strlcpy(current_url, station.url, sizeof(current_url));
@@ -520,7 +538,7 @@ static void fetch_task(void *arg)
 			}
 		}
 
-		h = open_with_retries(current_url, &tls_verified, failure_reason_buf, sizeof(failure_reason_buf));
+		h = open_with_retries(current_url, session.session_id, &tls_verified, failure_reason_buf, sizeof(failure_reason_buf));
 		if (!h) {
 			log_stream_summary(station.name, current_url, failure_reason_buf, NULL, false, 0);
 			goto done;
@@ -561,13 +579,13 @@ static void fetch_task(void *arg)
 	uint8_t *chunk = malloc(FETCH_CHUNK_SIZE);
 	if (!chunk) { free(meta_buf); goto done; }
 
-	while (!s_stop_requested) {
+	while (!s_stop_requested && session_is_active(session.session_id)) {
 		if (s_reconnect_requested) {
 			s_reconnect_requested = false;
 			ESP_LOGW(TAG_HTTP, "Reconnecting to %s after stall", current_url);
 			esp_http_client_close(h);
 			esp_http_client_cleanup(h);
-			h = open_with_retries(current_url, &tls_verified, failure_reason_buf, sizeof(failure_reason_buf));
+			h = open_with_retries(current_url, session.session_id, &tls_verified, failure_reason_buf, sizeof(failure_reason_buf));
 			if (!h) {
 				log_stream_summary(station.name, current_url, failure_reason_buf, NULL, false, 0);
 				break;
@@ -597,7 +615,7 @@ static void fetch_task(void *arg)
 				meta_buf[meta_len] = '\0';
 				char title[64] = {0};
 				parse_icy_title((char *)meta_buf, title, sizeof(title));
-				if (title[0] && s_title_cb) s_title_cb(title, s_title_ctx);
+				if (title[0] && session_is_active(session.session_id) && s_title_cb) s_title_cb(title, s_title_ctx);
 				ESP_LOGI(TAG_STREAM, "ICY metadata: %s", title[0] ? title : "<empty>");
 			}
 			meta_remain = meta_int;
@@ -611,8 +629,10 @@ static void fetch_task(void *arg)
 		uint64_t read_elapsed_us = esp_timer_get_time() - read_start_us;
 		if (n <= 0) {
 			ESP_LOGE(TAG_STREAM, "Stream read failed: n=%d errno=%d (%s)", n, errno, errno ? strerror(errno) : "no errno");
+			strlcpy(failure_reason_buf, n == 0 ? "end of stream" : (errno ? strerror(errno) : "stream read failed"), sizeof(failure_reason_buf));
 			break;
 		}
+		bytes_received += (size_t)n;
 		if (!first_payload_logged) {
 			char *content_type = NULL;
 			if (esp_http_client_get_response_header(h, "Content-Type", &content_type) == ESP_OK && content_type) {
@@ -629,7 +649,7 @@ static void fetch_task(void *arg)
 		//-- set while the buffer is reset, which triggers the assert seen in
 		//-- production. Poll with a zero timeout and retry briefly instead.
 		size_t sent = 0;
-		while (sent < (size_t)n && !s_stop_requested) {
+		while (sent < (size_t)n && !s_stop_requested && session_is_active(session.session_id)) {
 			size_t written = xStreamBufferSend(s_sb, chunk + sent, (size_t)n - sent, 0);
 			if (written == 0) {
 				vTaskDelay(pdMS_TO_TICKS(5));
@@ -659,14 +679,19 @@ done:
 		esp_http_client_close(h);
 		esp_http_client_cleanup(h);
 	}
+	if (!s_stop_requested && session_is_active(session.session_id) && bytes_received > 0) {
+		log_teardown_summary(&station, current_url, failure_reason_buf, bytes_received, http_code, esp_timer_get_time() - start_us);
+	}
 	//-- s_stop_requested is only set by a deliberate station switch/stop; any
 	//-- other path landing here (open failed, unresolved redirect, ICY/stream
 	//-- read failure, failed reconnect after a stall) means the stream died
 	//-- on its own, so surface that instead of leaving a stale "Switch
 	//-- Station .." or last-known artist/track on screen forever.
-	if (!s_stop_requested && s_stall_cb) s_stall_cb(true, s_stall_ctx);
-	s_fetch_running = false;
-	s_fetch_task = NULL;
+	if (!s_stop_requested && session_is_active(session.session_id) && s_stall_cb) s_stall_cb(true, s_stall_ctx);
+	if (session_is_active(session.session_id)) {
+		s_fetch_running = false;
+		s_fetch_task = NULL;
+	}
 	vTaskDelete(NULL);
 }
 
@@ -675,8 +700,10 @@ done:
 //-- slack instead of stalling the I2S feed
 static void stream_task(void *arg)
 {
-	(void)arg;
-	radio_station_t station = s_station;
+	audio_session_t session = *(audio_session_t *)arg;
+	free(arg);
+	if (!session_is_active(session.session_id)) vTaskDelete(NULL);
+	radio_station_t station = session.station;
 
 	esp_audio_simple_dec_cfg_t dc = {.dec_type = station.codec == RADIO_CODEC_AAC ? ESP_AUDIO_SIMPLE_DEC_TYPE_AAC : ESP_AUDIO_SIMPLE_DEC_TYPE_MP3, .use_frame_dec = false};
 	ESP_LOGI(TAG_CODEC, "Codec selected: %s", station.codec == RADIO_CODEC_AAC ? "AAC" : "MP3");
@@ -706,22 +733,18 @@ static void stream_task(void *arg)
 	//-- doesn't immediately starve the decoder (playback is muted during
 	//-- this wait anyway, via the warm-up mechanism below)
 	uint64_t prebuf_start_us = esp_timer_get_time();
-	while (!s_stop_requested && xStreamBufferBytesAvailable(s_sb) < BUF_PREFILL_THRESHOLD) {
+	while (!s_stop_requested && session_is_active(session.session_id) && xStreamBufferBytesAvailable(s_sb) < BUF_PREFILL_THRESHOLD) {
 		if (!s_fetch_running && xStreamBufferIsEmpty(s_sb)) break;
-		if (esp_timer_get_time() - prebuf_start_us > BUF_PREFILL_TIMEOUT_US) {
-			ESP_LOGW(TAG_BUFFER, "AUDIO_BUFFER: prebuffer timeout, starting with fill=%zu / %d", xStreamBufferBytesAvailable(s_sb), STREAM_BUF_CAPACITY);
-			break;
-		}
 		vTaskDelay(pdMS_TO_TICKS(20));
 	}
 	ESP_LOGD(TAG_BUFFER, "AUDIO_BUFFER: prebuffered %zu / %d bytes in %llu ms", xStreamBufferBytesAvailable(s_sb), STREAM_BUF_CAPACITY, (unsigned long long)((esp_timer_get_time() - prebuf_start_us) / 1000ULL));
 
-	while (!s_stop_requested) {
+	while (!s_stop_requested && session_is_active(session.session_id)) {
 		if (s_paused) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }
 		size_t want = in_cap - in_len;
 		size_t n = xStreamBufferReceive(s_sb, in + in_len, want, pdMS_TO_TICKS(50));
 		if (n == 0) {
-			if (s_stop_requested) break;
+			if (s_stop_requested || !session_is_active(session.session_id)) break;
 			//-- Upstream fetch_task ended (or never started) and nothing is
 			//-- left buffered: nothing more will ever arrive
 			if (!s_fetch_running && xStreamBufferIsEmpty(s_sb)) break;
@@ -780,12 +803,12 @@ static void stream_task(void *arg)
 				//-- The byte stream is entered mid-MP3-frame, so the decoder's
 				//-- first output can be a burst of noise before it locks onto
 				//-- frame sync; stay muted for a couple of frames to skip that.
-				if (s_muted && !warmed_up && ++good_frames >= 2) {
+				if (session_is_active(session.session_id) && s_muted && !warmed_up && ++good_frames >= 2) {
 					warmed_up = true;
 					s_muted = false;
 					if (s_mute_cb) s_mute_cb(false, s_mute_ctx);
 				}
-				if (!s_muted) {
+				if (session_is_active(session.session_id) && !s_muted) {
 					size_t written;
 					i2s_channel_write(s_tx, out, frame.decoded_size, &written, portMAX_DELAY);
 				}
@@ -793,7 +816,7 @@ static void stream_task(void *arg)
 			if (raw.consumed == 0) break;
 			raw.buffer += raw.consumed;
 			raw.len -= raw.consumed;
-		} while (raw.len && !s_stop_requested);
+		} while (raw.len && !s_stop_requested && session_is_active(session.session_id));
 
 		if (raw.len && raw.buffer != in) memmove(in, raw.buffer, raw.len);
 		in_len = raw.len;
@@ -804,8 +827,10 @@ static void stream_task(void *arg)
 decode_done:
 	esp_audio_simple_dec_close(dec);
 done:
-	s_stream_running = false;
-	s_stream_task = NULL;
+	if (session_is_active(session.session_id)) {
+		s_stream_running = false;
+		s_stream_task = NULL;
+	}
 	vTaskDelete(NULL);
 }
 
@@ -818,17 +843,32 @@ static void audio_task(void *arg)
 		if (s_stream_running || s_fetch_running) {
 			s_stop_requested = true;
 			for (int wait = 0; wait < 100 && (s_stream_running || s_fetch_running); wait++) vTaskDelay(pdMS_TO_TICKS(10));
-			xStreamBufferReset(s_sb);
 		}
-		s_station = message.station;
+		xStreamBufferReset(s_sb);
 		s_stop_requested = false;
+		audio_session_t *stream_session = malloc(sizeof(*stream_session));
+		audio_session_t *fetch_session = malloc(sizeof(*fetch_session));
+		if (!stream_session || !fetch_session) {
+			ESP_LOGE(TAG, "Unable to allocate station session");
+			free(stream_session);
+			free(fetch_session);
+			continue;
+		}
+		*stream_session = (audio_session_t){.station = message.station, .session_id = message.session_id};
+		*fetch_session = *stream_session;
 		//-- decode+I2S pinned to core 1, network fetch pinned to core 0
 		//-- (alongside the WiFi driver task) so neither competes with the
 		//-- other's scheduling
 		s_stream_running = true;
-		if (xTaskCreatePinnedToCore(stream_task, "radio_stream", 12288, NULL, 7, &s_stream_task, 1) != pdPASS) s_stream_running = false;
+		if (xTaskCreatePinnedToCore(stream_task, "radio_stream", 12288, stream_session, 7, &s_stream_task, 1) != pdPASS) {
+			free(stream_session);
+			s_stream_running = false;
+		}
 		s_fetch_running = true;
-		if (xTaskCreatePinnedToCore(fetch_task, "radio_fetch", 6144, NULL, 6, &s_fetch_task, 0) != pdPASS) s_fetch_running = false;
+		if (xTaskCreatePinnedToCore(fetch_task, "radio_fetch", 6144, fetch_session, 6, &s_fetch_task, 0) != pdPASS) {
+			free(fetch_session);
+			s_fetch_running = false;
+		}
 	}
 }
 
@@ -860,7 +900,7 @@ esp_err_t radio_audio_init(void)
 	if (!s_queue) return ESP_ERR_NO_MEM;
 	return xTaskCreate(audio_task, "radio_audio", 4096, NULL, 6, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
-esp_err_t radio_audio_play(const radio_station_t*s){if(!s||!s_queue)return ESP_ERR_INVALID_ARG;s_muted=true;s_paused=false;if(s_mute_cb)s_mute_cb(true,s_mute_ctx);audio_message_t message={.station=*s};return xQueueSend(s_queue,&message,0)==pdTRUE?ESP_OK:ESP_ERR_TIMEOUT;}
+esp_err_t radio_audio_play(const radio_station_t*s){if(!s||!s_queue)return ESP_ERR_INVALID_ARG;s_muted=true;s_paused=false;if(s_mute_cb)s_mute_cb(true,s_mute_ctx);uint32_t session_id=s_active_session_id+1;s_active_session_id=session_id;audio_message_t message={.station=*s,.session_id=session_id};return xQueueSend(s_queue,&message,0)==pdTRUE?ESP_OK:ESP_ERR_TIMEOUT;}
 void radio_audio_set_volume(int p){s_volume=p<0?0:(p>100?100:p);}
 int radio_audio_get_volume(void){return s_volume;}
 void radio_audio_set_paused(bool paused){s_paused=paused;}

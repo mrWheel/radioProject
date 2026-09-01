@@ -24,8 +24,25 @@ const STALL_TIMEOUT_MS = 9000;
 
 function showConnectionModal(title) {
   connectionHalted = true;
+  wsReady = false;
+  lastMessageAt = Date.now();
+
+  document.getElementById('stationName').textContent = 'Connection lost';
+  document.getElementById('line1').textContent = '-';
+  document.getElementById('line2').textContent = '-';
+  document.getElementById('line3').textContent = '-';
+  setStatus(title === 'Connection stalled' ? 'Reconnect required' : 'Connection lost');
+
   document.getElementById('takeoverModalTitle').textContent = title;
   document.getElementById('takeoverModal').classList.add('open');
+}
+
+function resetDisconnectedUi() {
+  document.getElementById('stationName').textContent = 'No station';
+  document.getElementById('line1').textContent = '-';
+  document.getElementById('line2').textContent = '-';
+  document.getElementById('line3').textContent = '-';
+  setStatus('Waiting for connection');
 }
 
 const INFO_MODAL_AUTO_DISMISS_MS = 3000;
@@ -45,10 +62,17 @@ function hideInfoModal() {
 
 function connectWs() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
-  ws.onopen = () => { wsReady = true; lastMessageAt = Date.now(); setStatus('Connected'); send('getState'); };
+  ws.onopen = () => {
+    wsReady = true;
+    lastMessageAt = Date.now();
+    connectionHalted = false;
+    setStatus('Connected');
+    send('getState');
+  };
   ws.onclose = () => {
     wsReady = false;
     if (connectionHalted) return;
+    resetDisconnectedUi();
     setStatus('Reconnecting…');
     setTimeout(connectWs, 1000);
   };
@@ -186,7 +210,18 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'ArrowUp') { event.preventDefault(); send('stationPrevious', null, document.getElementById('prevBtn')); }
   if (event.key === 'ArrowDown') { event.preventDefault(); send('stationNext', null, document.getElementById('nextBtn')); }
 });
-document.getElementById('reconnectBtn').addEventListener('click', () => location.reload());
+document.getElementById('reconnectBtn').addEventListener('click', () => {
+  connectionHalted = false;
+  wsReady = false;
+  lastMessageAt = Date.now();
+  if (ws) {
+    try { ws.close(); } catch (e) { /* ignore */ }
+  }
+  document.getElementById('takeoverModal').classList.remove('open');
+  resetDisconnectedUi();
+  setStatus('Reconnecting…');
+  location.reload();
+});
 
 //-- Active heartbeat: the server only broadcasts state on real changes, so
 //-- during idle periods this is the only traffic keeping lastMessageAt
