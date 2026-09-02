@@ -1,8 +1,9 @@
-const state = { stationIndex: 0, stationCount: 0, volume: 0, line1: '-', line2: '-', line3: '-', playing: false, streamConnected: false, station: null };
+const state = { stationIndex: 0, stationCount: 0, volume: 0, line1: '-', line2: '-', line3: '-', playing: false, streamConnected: false, audioOwner: 'device', station: null };
 let ws = null;
 let wsReady = false;
 let manageMode = 'view';
 let pendingButtons = [];
+let browserAudio = null;
 
 function markPressed(btn) { if (!btn) return; btn.classList.remove('done'); btn.classList.add('pressed'); pendingButtons.push(btn); }
 function resolvePending() { pendingButtons.forEach((btn) => { btn.classList.remove('pressed'); btn.classList.add('done'); setTimeout(() => btn.classList.remove('done'), 400); }); pendingButtons = []; }
@@ -96,6 +97,36 @@ function connectWs() {
 
 function setStatus(msg) { document.getElementById('status').textContent = msg; }
 
+function stopBrowserAudio() {
+  if (!browserAudio) return;
+  try { browserAudio.pause(); } catch (e) { /* ignore */ }
+  browserAudio.src = '';
+  browserAudio.load();
+  browserAudio = null;
+}
+
+function applyAudioOwner(owner) {
+  state.audioOwner = owner === 'browser' ? 'browser' : 'device';
+  const toggle = document.getElementById('audioOwnerToggle');
+  const label = document.getElementById('audioOwnerValue');
+  if (toggle) toggle.checked = (state.audioOwner === 'browser');
+  if (label) label.textContent = state.audioOwner === 'browser' ? 'Browser' : 'Device';
+
+  if (state.audioOwner === 'browser') {
+    const url = state.station && state.station.url ? state.station.url : null;
+    if (url) {
+      stopBrowserAudio();
+      browserAudio = new Audio(url);
+      browserAudio.preload = 'auto';
+      browserAudio.autoplay = true;
+      browserAudio.volume = 1.0;
+      browserAudio.play().catch(() => setStatus('Browser audio requires a user gesture'));
+    }
+  } else {
+    stopBrowserAudio();
+  }
+}
+
 function applyState(data) {
   if (!data) return;
   state.stationIndex = Number(data.stationIndex ?? 0);
@@ -103,6 +134,7 @@ function applyState(data) {
   state.volume = Number(data.volume ?? 0);
   state.playing = !!data.playing;
   state.streamConnected = !!data.streamConnected;
+  state.audioOwner = (data.audioOwner === 'browser') ? 'browser' : 'device';
   state.station = data.station || null;
   if (state.station && state.station.name) document.getElementById('stationName').textContent = state.station.name;
   state.line1 = data.line1 ?? state.line1;
@@ -117,6 +149,7 @@ function applyState(data) {
   const slider = document.getElementById('volumeSlider');
   slider.value = String(state.volume);
   document.getElementById('volumeValue').textContent = state.volume + '%';
+  applyAudioOwner(state.audioOwner);
   setStatus(state.streamConnected ? 'Connected' : 'Waiting for stream');
   document.getElementById('playBtn').classList.toggle('primary', state.playing);
   document.getElementById('pauseBtn').classList.toggle('primary', !state.playing);
@@ -204,6 +237,11 @@ document.getElementById('volumeSlider').addEventListener('input', (event) => {
   const value = Number(event.target.value);
   document.getElementById('volumeValue').textContent = value + '%';
   send('volumeSet', { value });
+});
+document.getElementById('audioOwnerToggle').addEventListener('change', (event) => {
+  const nextOwner = event.target.checked ? 'browser' : 'device';
+  applyAudioOwner(nextOwner);
+  send('audioOwnerSet', { owner: nextOwner });
 });
 document.addEventListener('keydown', (event) => {
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;

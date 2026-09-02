@@ -17,7 +17,7 @@
 #include <string.h>
 
 //-- never remove this constant; it indicates the program version
-const char* PROG_VERSION = "v1.0.0";
+const char* PROG_VERSION = "v1.1.0";
 
 //-- How long the "Connected: SSID / IP" screen stays up before switching to
 //-- the Volume/PLAY screen, so the user can actually read it.
@@ -27,6 +27,11 @@ typedef enum
   UI_VOLUME,
   UI_STATION_SELECT
 } ui_mode_t;
+typedef enum
+{
+  AUDIO_OWNER_DEVICE,
+  AUDIO_OWNER_BROWSER
+} audio_owner_t;
 typedef struct
 {
   ui_mode_t mode;
@@ -36,6 +41,7 @@ typedef struct
   TickType_t last_rotation;
 } app_state_t;
 static QueueHandle_t s_events;
+static audio_owner_t s_audio_owner = AUDIO_OWNER_DEVICE;
 static app_state_t s = {.mode = UI_VOLUME, .volume = CONFIG_RADIO_DEFAULT_VOLUME};
 static void input_cb(radio_input_event_t e, void* ctx)
 {
@@ -265,6 +271,20 @@ static void on_web_gui_state_applied(size_t station_index, int volume, void* ctx
     show_volume();
 }
 
+static void on_web_gui_audio_owner_changed(web_gui_audio_owner_t owner, void* ctx)
+{
+  (void)ctx;
+  s_audio_owner = owner == WEB_GUI_AUDIO_OWNER_BROWSER ? AUDIO_OWNER_BROWSER : AUDIO_OWNER_DEVICE;
+  if (s_audio_owner == AUDIO_OWNER_DEVICE)
+  {
+    const radio_station_t* station = station_store_get(s.playing);
+    if (station)
+    {
+      radio_audio_play(station);
+    }
+  }
+}
+
 //-- Fired from inside wifi_prov_start() (stored-credential path) or from the
 //-- portal's async event task (captive-portal path) once STA is up. Reads the
 //-- SSID/IP back from the WiFi driver itself, since wifi_prov_on_connected_cb_t
@@ -309,6 +329,18 @@ static void ui_task(void* arg)
       }
       if (e == RADIO_INPUT_EN_PUSH)
       {
+        if (s_audio_owner == AUDIO_OWNER_BROWSER)
+        {
+          s_audio_owner = AUDIO_OWNER_DEVICE;
+          web_gui_set_audio_owner(WEB_GUI_AUDIO_OWNER_DEVICE);
+          const radio_station_t* station = station_store_get(s.playing);
+          if (station)
+          {
+            radio_audio_play(station);
+          }
+          web_gui_notify_device_state(s.playing);
+          continue;
+        }
         if (s.mode == UI_VOLUME)
         {
           s.mode = UI_STATION_SELECT;
@@ -330,6 +362,18 @@ static void ui_task(void* arg)
       if (e == RADIO_INPUT_ROTATE_LEFT || e == RADIO_INPUT_ROTATE_RIGHT)
       {
         int d = e == RADIO_INPUT_ROTATE_RIGHT ? 1 : -1;
+        if (s_audio_owner == AUDIO_OWNER_BROWSER)
+        {
+          s_audio_owner = AUDIO_OWNER_DEVICE;
+          web_gui_set_audio_owner(WEB_GUI_AUDIO_OWNER_DEVICE);
+          const radio_station_t* station = station_store_get(s.playing);
+          if (station)
+          {
+            radio_audio_play(station);
+          }
+          web_gui_notify_device_state(s.playing);
+          continue;
+        }
         if (s.mode == UI_VOLUME)
         {
           s.volume += d * 2;
@@ -382,6 +426,7 @@ void app_main(void)
   radio_audio_set_mute_callback(on_audio_mute_changed, NULL);
   radio_audio_set_stall_callback(stall_cb, NULL);
   web_gui_set_state_applied_cb(on_web_gui_state_applied, NULL);
+  web_gui_set_audio_owner_cb(on_web_gui_audio_owner_changed, NULL);
   s_events = xQueueCreate(12, sizeof(radio_input_event_t));
   ESP_ERROR_CHECK(radio_input_start(input_cb, NULL));
   wifi_prov_config_t wc = WIFI_PROV_DEFAULT_CONFIG();

@@ -34,6 +34,18 @@
           </div>
           <input id="volumeSlider" type="range" min="0" max="100" value="0" />
         </div>
+        <div class="slider-wrap">
+          <div class="slider-row">
+            <span>Audio output</span>
+            <div class="switch-stack">
+              <label class="switch" aria-label="Audio output">
+                <input id="audioOwnerToggle" type="checkbox" />
+                <span class="switch-slider"></span>
+              </label>
+              <span id="audioOwnerValue" class="volume-value">Device</span>
+            </div>
+          </div>
+        </div>
         <button id="manageBtn" class="primary control-btn" type="button">Manage Stations</button>
       </div>
       <div id="status" class="status">Waiting for connection</div>
