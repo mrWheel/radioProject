@@ -17,7 +17,7 @@
 #include <string.h>
 
 //-- never remove this constant; it indicates the program version
-const char* PROG_VERSION = "v1.2.0";
+const char* PROG_VERSION = "v1.2.1";
 
 //-- How long the "Connected: SSID / IP" screen stays up before switching to
 //-- the Volume/PLAY screen, so the user can actually read it.
@@ -362,6 +362,25 @@ static void ui_task(void* arg)
     }
   }
 }
+//-- Polls the stream-buffer fill level and forwards it to the display, so
+//-- the bottom-right bar tracks the buffer in near-real-time without
+//-- coupling radio_audio to radio_display.
+static void buffer_monitor_task(void* arg)
+{
+  (void)arg;
+  int last_sent = -1;
+  for (;;)
+  {
+    vTaskDelay(pdMS_TO_TICKS(500));
+    int pct = radio_audio_get_buffer_fill_percent();
+    if (pct != last_sent)
+    {
+      last_sent = pct;
+      radio_display_buffer_fill(pct);
+    }
+  }
+}
+
 void app_main(void)
 {
   ESP_ERROR_CHECK(radio_settings_init());
@@ -398,4 +417,5 @@ void app_main(void)
     web_gui_notify_device_state(s.playing);
   }
   xTaskCreate(ui_task, "radio_ui", 4096, NULL, 6, NULL);
+  xTaskCreate(buffer_monitor_task, "buf_mon", 2048, NULL, 5, NULL);
 }
