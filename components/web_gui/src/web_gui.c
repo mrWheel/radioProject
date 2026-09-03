@@ -37,9 +37,6 @@ static QueueHandle_t s_ws_queue = NULL;
 static TaskHandle_t s_ws_worker_task = NULL;
 static web_gui_state_applied_cb_t s_state_applied_cb = NULL;
 static void* s_state_applied_ctx = NULL;
-static web_gui_audio_owner_cb_t s_audio_owner_cb = NULL;
-static void* s_audio_owner_ctx = NULL;
-static web_gui_audio_owner_t s_audio_owner = WEB_GUI_AUDIO_OWNER_DEVICE;
 //-- Only one browser may be connected to /ws at a time; -1 means no client.
 static int s_active_ws_fd = -1;
 
@@ -51,7 +48,6 @@ typedef struct
   char name[128];
   char url[1200];
   char codec[8];
-  char owner[16];
   int value;
 } web_gui_ws_cmd_t;
 
@@ -134,8 +130,6 @@ static void web_gui_fill_state(cJSON* data)
   cJSON_AddNumberToObject(data, "volume", (double)radio_audio_get_volume());
   cJSON_AddBoolToObject(data, "playing", station_count > 0 && !radio_audio_is_paused());
   cJSON_AddBoolToObject(data, "streamConnected", true);
-  cJSON_AddStringToObject(data, "audioOwner",
-                          s_audio_owner == WEB_GUI_AUDIO_OWNER_BROWSER ? "browser" : "device");
   cJSON_AddStringToObject(data, "line1", s_current_line1);
   cJSON_AddStringToObject(data, "line2", s_current_line2);
   cJSON_AddStringToObject(data, "line3", s_current_line3);
@@ -166,28 +160,12 @@ static void web_gui_build_station(radio_station_t* station, const char* name, co
 //-- transports apply commands identically. Must only be called outside of the
 //-- WebSocket receive callback, since it performs blocking station/filesystem work.
 static void web_gui_apply_command(const char* type, const char* name, const char* url,
-                                  const char* codec, const char* owner, int value, cJSON* root,
-                                  cJSON* response_data)
+                                  const char* codec, int value, cJSON* root, cJSON* response_data)
 {
   cJSON_AddStringToObject(root, "type", "ack");
 
   if (strcmp(type, "getState") == 0)
   {
-    cJSON_ReplaceItemInObject(root, "type", cJSON_CreateString("state"));
-    web_gui_fill_state(response_data);
-  }
-  else if (strcmp(type, "audioOwnerSet") == 0)
-  {
-    web_gui_audio_owner_t next_owner = WEB_GUI_AUDIO_OWNER_DEVICE;
-    if (owner && strcasecmp(owner, "browser") == 0)
-    {
-      next_owner = WEB_GUI_AUDIO_OWNER_BROWSER;
-    }
-    web_gui_set_audio_owner(next_owner);
-    if (s_audio_owner_cb)
-    {
-      s_audio_owner_cb(s_audio_owner, s_audio_owner_ctx);
-    }
     cJSON_ReplaceItemInObject(root, "type", cJSON_CreateString("state"));
     web_gui_fill_state(response_data);
   }
@@ -334,16 +312,6 @@ static void web_gui_apply_command(const char* type, const char* name, const char
   }
 }
 
-void web_gui_set_audio_owner(web_gui_audio_owner_t owner)
-{
-  s_audio_owner = owner;
-}
-
-web_gui_audio_owner_t web_gui_get_audio_owner(void)
-{
-  return s_audio_owner;
-}
-
 static esp_err_t web_gui_handle_command(httpd_req_t* req)
 {
   uint8_t buffer[1024] = {0};
@@ -377,14 +345,12 @@ static esp_err_t web_gui_handle_command(httpd_req_t* req)
   const char* name = NULL;
   const char* url = NULL;
   const char* codec = NULL;
-  const char* owner = NULL;
   int value = 0;
   if (data)
   {
     cJSON* name_obj = cJSON_GetObjectItemCaseSensitive(data, "name");
     cJSON* url_obj = cJSON_GetObjectItemCaseSensitive(data, "url");
     cJSON* codec_obj = cJSON_GetObjectItemCaseSensitive(data, "codec");
-    cJSON* owner_obj = cJSON_GetObjectItemCaseSensitive(data, "owner");
     cJSON* value_obj = cJSON_GetObjectItemCaseSensitive(data, "value");
     if (name_obj && cJSON_IsString(name_obj))
       name = name_obj->valuestring;
@@ -392,12 +358,10 @@ static esp_err_t web_gui_handle_command(httpd_req_t* req)
       url = url_obj->valuestring;
     if (codec_obj && cJSON_IsString(codec_obj))
       codec = codec_obj->valuestring;
-    if (owner_obj && cJSON_IsString(owner_obj))
-      owner = owner_obj->valuestring;
     if (value_obj && cJSON_IsNumber(value_obj))
       value = value_obj->valueint;
   }
-  web_gui_apply_command(type, name, url, codec, owner, value, root, response_data);
+  web_gui_apply_command(type, name, url, codec, value, root, response_data);
 
   esp_err_t err = web_gui_response_json(req, root);
   cJSON_Delete(msg);
@@ -638,8 +602,7 @@ static void web_gui_ws_worker_task(void* arg)
     cJSON* response_data = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "data", response_data);
     web_gui_apply_command(cmd.type, cmd.name[0] ? cmd.name : NULL, cmd.url[0] ? cmd.url : NULL,
-                          cmd.codec[0] ? cmd.codec : NULL, cmd.owner[0] ? cmd.owner : NULL,
-                          cmd.value, root, response_data);
+                          cmd.codec[0] ? cmd.codec : NULL, cmd.value, root, response_data);
     web_gui_ws_broadcast(root);
     cJSON_Delete(root);
   }
@@ -775,9 +738,9 @@ static esp_err_t ws_handler(httpd_req_t* req)
     return err;
   }
 
-  static const char* k_queued_types[] = {"stationPrevious", "stationNext", "play",
-                                         "pause",           "volumeSet",   "audioOwnerSet",
-                                         "stationAdd",      "stationEdit", "stationDelete"};
+  static const char* k_queued_types[] = {"stationPrevious", "stationNext",  "play",
+                                         "pause",           "volumeSet",    "stationAdd",
+                                         "stationEdit",     "stationDelete"};
   bool known = false;
   for (size_t i = 0; i < sizeof(k_queued_types) / sizeof(k_queued_types[0]); ++i)
   {
@@ -801,7 +764,6 @@ static esp_err_t ws_handler(httpd_req_t* req)
     cJSON* name_obj = cJSON_GetObjectItemCaseSensitive(data, "name");
     cJSON* url_obj = cJSON_GetObjectItemCaseSensitive(data, "url");
     cJSON* codec_obj = cJSON_GetObjectItemCaseSensitive(data, "codec");
-    cJSON* owner_obj = cJSON_GetObjectItemCaseSensitive(data, "owner");
     cJSON* value_obj = cJSON_GetObjectItemCaseSensitive(data, "value");
     if (name_obj && cJSON_IsString(name_obj))
       strlcpy(cmd.name, name_obj->valuestring, sizeof(cmd.name));
@@ -809,8 +771,6 @@ static esp_err_t ws_handler(httpd_req_t* req)
       strlcpy(cmd.url, url_obj->valuestring, sizeof(cmd.url));
     if (codec_obj && cJSON_IsString(codec_obj))
       strlcpy(cmd.codec, codec_obj->valuestring, sizeof(cmd.codec));
-    if (owner_obj && cJSON_IsString(owner_obj))
-      strlcpy(cmd.owner, owner_obj->valuestring, sizeof(cmd.owner));
     if (value_obj && cJSON_IsNumber(value_obj))
       cmd.value = value_obj->valueint;
   }
@@ -961,12 +921,6 @@ void web_gui_set_state_applied_cb(web_gui_state_applied_cb_t cb, void* ctx)
 {
   s_state_applied_cb = cb;
   s_state_applied_ctx = ctx;
-}
-
-void web_gui_set_audio_owner_cb(web_gui_audio_owner_cb_t cb, void* ctx)
-{
-  s_audio_owner_cb = cb;
-  s_audio_owner_ctx = ctx;
 }
 
 void web_gui_deinit(void)

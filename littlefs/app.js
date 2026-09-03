@@ -1,9 +1,15 @@
-const state = { stationIndex: 0, stationCount: 0, volume: 0, line1: '-', line2: '-', line3: '-', playing: false, streamConnected: false, audioOwner: 'device', station: null };
+const state = { stationIndex: 0, stationCount: 0, volume: 0, line1: '-', line2: '-', line3: '-', playing: false, streamConnected: false, station: null };
 let ws = null;
 let wsReady = false;
 let manageMode = 'view';
 let pendingButtons = [];
+//-- Browser audio is purely local to this browser tab: the radio device
+//-- keeps playing via its own PCM/I2S path regardless, and this tab's own
+//-- direct stream of the current station only runs while the "Muziek via
+//-- browser" switch is On.
 let browserAudio = null;
+let browserAudioOn = false;
+let browserAudioUrl = null;
 
 function markPressed(btn) { if (!btn) return; btn.classList.remove('done'); btn.classList.add('pressed'); pendingButtons.push(btn); }
 function resolvePending() { pendingButtons.forEach((btn) => { btn.classList.remove('pressed'); btn.classList.add('done'); setTimeout(() => btn.classList.remove('done'), 400); }); pendingButtons = []; }
@@ -27,6 +33,9 @@ function showConnectionModal(title) {
   connectionHalted = true;
   wsReady = false;
   lastMessageAt = Date.now();
+  //-- Control of the radio is gone (taken over or stalled); stop this tab's
+  //-- own stream too instead of letting it drift on stale station state.
+  setBrowserAudio(false);
 
   document.getElementById('stationName').textContent = 'Connection lost';
   document.getElementById('line1').textContent = '-';
@@ -105,25 +114,28 @@ function stopBrowserAudio() {
   browserAudio = null;
 }
 
-function applyAudioOwner(owner) {
-  state.audioOwner = owner === 'browser' ? 'browser' : 'device';
-  const toggle = document.getElementById('audioOwnerToggle');
-  const label = document.getElementById('audioOwnerValue');
-  if (toggle) toggle.checked = (state.audioOwner === 'browser');
-  if (label) label.textContent = state.audioOwner === 'browser' ? 'Browser' : 'Device';
-
-  if (state.audioOwner === 'browser') {
+//-- Every page load starts with the switch Off: browsers require an explicit
+//-- user gesture before audio may play, and the switch click is exactly that
+//-- gesture (autoplay without it would be blocked anyway). The device stream
+//-- is never touched; this only starts/stops this tab's own <audio> element,
+//-- which fetches the original station URL directly (never via the ESP32).
+function setBrowserAudio(on) {
+  browserAudioOn = !!on;
+  const toggle = document.getElementById('browserAudioToggle');
+  const label = document.getElementById('browserAudioValue');
+  if (toggle) toggle.checked = browserAudioOn;
+  if (label) label.textContent = browserAudioOn ? 'On' : 'Off';
+  stopBrowserAudio();
+  browserAudioUrl = null;
+  if (browserAudioOn) {
     const url = state.station && state.station.url ? state.station.url : null;
-    if (url) {
-      stopBrowserAudio();
-      browserAudio = new Audio(url);
-      browserAudio.preload = 'auto';
-      browserAudio.autoplay = true;
-      browserAudio.volume = 1.0;
-      browserAudio.play().catch(() => setStatus('Browser audio requires a user gesture'));
-    }
-  } else {
-    stopBrowserAudio();
+    if (!url) { setStatus('No stream URL for this station'); return; }
+    browserAudioUrl = url;
+    browserAudio = new Audio(url);
+    browserAudio.preload = 'auto';
+    browserAudio.autoplay = true;
+    browserAudio.volume = 1.0;
+    browserAudio.play().catch(() => setStatus('Browser audio requires a user gesture'));
   }
 }
 
@@ -134,7 +146,6 @@ function applyState(data) {
   state.volume = Number(data.volume ?? 0);
   state.playing = !!data.playing;
   state.streamConnected = !!data.streamConnected;
-  state.audioOwner = (data.audioOwner === 'browser') ? 'browser' : 'device';
   state.station = data.station || null;
   if (state.station && state.station.name) document.getElementById('stationName').textContent = state.station.name;
   state.line1 = data.line1 ?? state.line1;
@@ -149,7 +160,13 @@ function applyState(data) {
   const slider = document.getElementById('volumeSlider');
   slider.value = String(state.volume);
   document.getElementById('volumeValue').textContent = state.volume + '%';
-  applyAudioOwner(state.audioOwner);
+  //-- Follow station changes while this browser's audio is On (e.g. switched
+  //-- from the EC11); title/volume-only state updates must NOT restart the
+  //-- browser stream, so only re-point the <audio> element on a URL change.
+  if (browserAudioOn) {
+    const url = state.station && state.station.url ? state.station.url : null;
+    if (url && url !== browserAudioUrl) setBrowserAudio(true);
+  }
   setStatus(state.streamConnected ? 'Connected' : 'Waiting for stream');
   document.getElementById('playBtn').classList.toggle('primary', state.playing);
   document.getElementById('pauseBtn').classList.toggle('primary', !state.playing);
@@ -238,10 +255,10 @@ document.getElementById('volumeSlider').addEventListener('input', (event) => {
   document.getElementById('volumeValue').textContent = value + '%';
   send('volumeSet', { value });
 });
-document.getElementById('audioOwnerToggle').addEventListener('change', (event) => {
-  const nextOwner = event.target.checked ? 'browser' : 'device';
-  applyAudioOwner(nextOwner);
-  send('audioOwnerSet', { owner: nextOwner });
+//-- No server round-trip: the switch only starts/stops this tab's own
+//-- stream; the radio device itself keeps playing either way.
+document.getElementById('browserAudioToggle').addEventListener('change', (event) => {
+  setBrowserAudio(event.target.checked);
 });
 document.addEventListener('keydown', (event) => {
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
