@@ -19,8 +19,12 @@ CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 #-- reading server RESPONSE headers (Location, Content-Type, icy-metaint,
 #-- ...) requires esp_http_client_get_response_header(), which needs this
 #-- storage enabled. Without it those lookups silently always miss.
+#-- Some CDNs (e.g. cdnstream.com, used by KJazz 88.1) send more than 20
+#-- response headers (icy-* fields, Set-Cookie, X-DAS-SessionId, P3P, ...),
+#-- which silently dropped headers past the 20th ("Response header limit
+#-- exceeded"); raised so nothing we might need is lost.
 CONFIG_ESP_HTTP_CLIENT_SAVE_RESPONSE_HEADERS=y
-CONFIG_ESP_HTTP_CLIENT_MAX_SAVED_RESPONSE_HEADERS=20
+CONFIG_ESP_HTTP_CLIENT_MAX_SAVED_RESPONSE_HEADERS=32
 CONFIG_ESP_HTTP_CLIENT_MAX_RESPONSE_HEADER_SIZE=256
 CONFIG_AUDIO_DECODER_MP3_SUPPORT=y
 CONFIG_AUDIO_DECODER_AAC_SUPPORT=y

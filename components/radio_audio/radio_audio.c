@@ -58,22 +58,17 @@ static volatile uint32_t s_buf_underruns = 0;
 static volatile size_t s_buf_min_fill = SIZE_MAX;
 static uint64_t s_buf_last_log_us = 0;
 static volatile int s_icy_br_kbps = -1;
-//-- Counts consecutive (unbroken by any successful receive) underruns in
-//-- stream_task; reset to 0 the moment data flows again. Used to detect a
-//-- network-side stall that the ring buffer's slack can't absorb, so
-//-- fetch_task can be told to drop the connection and reconnect instead of
-//-- waiting forever on a stalled server (see AUDIO_BUFFER UNDERRUN diagnostics
-//-- where a single esp_http_client_read() call blocked for over a second).
-static volatile uint32_t s_buf_consecutive_underruns = 0;
 static volatile bool s_reconnect_requested = false;
 //-- Ring buffer must hold at least this many bytes before stream_task starts
 //-- decoding, so a brief network stall right after connecting doesn't
-//-- immediately starve playback (see AUDIO_BUFFER UNDERRUN diagnostics)
+//-- immediately starve playback (see AUDIO_BUFFER UNDERRUN diagnostics).
+//-- Also the target stream_task waits to refill up to after an UNDERRUN,
+//-- instead of hammering the ring buffer every 50ms while it stays empty.
 #define BUF_PREFILL_THRESHOLD (STREAM_BUF_CAPACITY / 2)
-//-- ~5s of continuous starvation (underruns fire roughly every 50ms while
-//-- fetch_task is still alive but the buffer stays empty) before giving up on
-//-- the current connection and reconnecting
-#define STALL_UNDERRUN_THRESHOLD 100
+//-- Longest an UNDERRUN refill-wait may run before giving up on the current
+//-- connection and requesting a reconnect instead of waiting forever on a
+//-- stalled server
+#define STALL_REFILL_TIMEOUT_US (5 * 1000 * 1000)
 //-- Set as soon as a switch is requested so a stale tail of the old station
 //-- never bleeds into the new one; cleared only by the new stream once it has
 //-- decoded a couple of good frames (see stream_task)
@@ -622,6 +617,24 @@ static esp_http_client_handle_t open_with_retries(const char* url, uint32_t sess
   return NULL;
 }
 
+//-- Waits before a reconnect attempt with capped exponential backoff
+//-- (doubling each call, capped at 15s), polling every 100ms so a station
+//-- switch or stop request aborts the wait immediately. Returns true if the
+//-- caller should retry the connection, false if it should give up for good.
+static bool wait_before_reopen(uint32_t session_id, int* delay_ms)
+{
+  int waited = 0;
+  while (waited < *delay_ms)
+  {
+    if (s_stop_requested || !session_is_active(session_id))
+      return false;
+    vTaskDelay(pdMS_TO_TICKS(100));
+    waited += 100;
+  }
+  *delay_ms = (*delay_ms * 2 < 15000) ? *delay_ms * 2 : 15000;
+  return !s_stop_requested && session_is_active(session_id);
+}
+
 //-- Owns the HTTP/ICY connection and does nothing else: reads network bytes,
 //-- strips interleaved ICY metadata, and pushes pure audio bytes into the
 //-- stream buffer. Runs on its own core so a slow/blocking read never delays
@@ -641,13 +654,18 @@ static void fetch_task(void* arg)
   s_buf_min_fill = SIZE_MAX;
   s_buf_last_log_us = start_us;
   s_icy_br_kbps = -1;
-  s_buf_consecutive_underruns = 0;
   s_reconnect_requested = false;
   if (session_is_active(session.session_id) && s_title_cb)
     s_title_cb("", s_title_ctx);
   if (session_is_active(session.session_id) && s_stall_cb)
     s_stall_cb(false, s_stall_ctx);
   log_station_banner(&station);
+  //-- Backoff between full reconnect cycles (open failed / unresolved
+  //-- redirect / stream died after all retries) so a persistent outage
+  //-- (e.g. DNS not resolving) doesn't spin the CPU; doubles on each
+  //-- successive failure, reset to base once a connection succeeds.
+  int reopen_delay_ms = 2000;
+reopen_stream:;
   char current_url[RADIO_URL_MAX];
   strlcpy(current_url, station.url, sizeof(current_url));
   char failure_reason_buf[64] = "HTTP open failed";
@@ -703,6 +721,10 @@ static void fetch_task(void* arg)
     if (!h)
     {
       log_stream_summary(station.name, current_url, failure_reason_buf, NULL, false, 0);
+      if (session_is_active(session.session_id) && s_stall_cb)
+        s_stall_cb(true, s_stall_ctx);
+      if (wait_before_reopen(session.session_id, &reopen_delay_ms))
+        goto reopen_stream;
       goto done;
     }
     esp_http_client_fetch_headers(h);
@@ -723,6 +745,10 @@ static void fetch_task(void* arg)
       esp_http_client_close(h);
       esp_http_client_cleanup(h);
       h = NULL;
+      if (session_is_active(session.session_id) && s_stall_cb)
+        s_stall_cb(true, s_stall_ctx);
+      if (wait_before_reopen(session.session_id, &reopen_delay_ms))
+        goto reopen_stream;
       goto done;
     }
     ESP_LOGW(TAG_HTTP, "Following redirect to %s", location);
@@ -731,6 +757,13 @@ static void fetch_task(void* arg)
     esp_http_client_cleanup(h);
     h = NULL;
   }
+
+  //-- Connected successfully (possibly after redirects/retries): clear any
+  //-- stale "Stream stalled" indicator and reset the reconnect backoff so a
+  //-- later outage starts retrying quickly again.
+  reopen_delay_ms = 2000;
+  if (session_is_active(session.session_id) && s_stall_cb)
+    s_stall_cb(false, s_stall_ctx);
 
   //-- ICY metadata: server interleaves a length-prefixed "StreamTitle='...';"
   //-- block every icy-metaint bytes of audio when we asked for it above
@@ -751,6 +784,11 @@ static void fetch_task(void* arg)
     goto done;
   }
 
+  //-- Set on any failure exit from the loop below (as opposed to a
+  //-- deliberate stop/station switch, which simply falls the while
+  //-- condition false) so the stream can be reconnected instead of the
+  //-- task terminating for good.
+  bool loop_broke = false;
   while (!s_stop_requested && session_is_active(session.session_id))
   {
     if (s_reconnect_requested)
@@ -764,6 +802,7 @@ static void fetch_task(void* arg)
       if (!h)
       {
         log_stream_summary(station.name, current_url, failure_reason_buf, NULL, false, 0);
+        loop_broke = true;
         break;
       }
       esp_http_client_fetch_headers(h);
@@ -782,6 +821,7 @@ static void fetch_task(void* arg)
       if (http_read_exact(h, &len_byte, 1) != 0)
       {
         ESP_LOGE(TAG_STREAM, "ICY metadata length read failed; connection ended unexpectedly");
+        loop_broke = true;
         break;
       }
       size_t meta_len = (size_t)len_byte * 16;
@@ -790,6 +830,7 @@ static void fetch_task(void* arg)
         if (http_read_exact(h, meta_buf, meta_len) != 0)
         {
           ESP_LOGE(TAG_STREAM, "ICY metadata payload read failed");
+          loop_broke = true;
           break;
         }
         meta_buf[meta_len] = '\0';
@@ -817,6 +858,7 @@ static void fetch_task(void* arg)
       strlcpy(failure_reason_buf,
               n == 0 ? "end of stream" : (errno ? strerror(errno) : "stream read failed"),
               sizeof(failure_reason_buf));
+      loop_broke = true;
       break;
     }
     bytes_received += (size_t)n;
@@ -881,6 +923,19 @@ static void fetch_task(void* arg)
   }
   free(chunk);
   free(meta_buf);
+  if (loop_broke && !s_stop_requested && session_is_active(session.session_id))
+  {
+    if (h)
+    {
+      esp_http_client_close(h);
+      esp_http_client_cleanup(h);
+      h = NULL;
+    }
+    if (s_stall_cb)
+      s_stall_cb(true, s_stall_ctx);
+    if (wait_before_reopen(session.session_id, &reopen_delay_ms))
+      goto reopen_stream;
+  }
 done:
   if (h)
   {
@@ -980,24 +1035,40 @@ static void stream_task(void* arg)
       if (!s_fetch_running && xStreamBufferIsEmpty(s_sb))
         break;
       //-- Decoder was starved for a full 50 ms wait while fetch_task is
-      //-- still alive: the network side isn't keeping up with playback
+      //-- still alive: the network side isn't keeping up with playback.
+      //-- Rather than retrying immediately (which just re-triggers this
+      //-- same underrun every ~50ms until data trickles in), wait here
+      //-- until the buffer has refilled back up to the same 50% cushion
+      //-- used for the initial prebuffer, so playback resumes on a
+      //-- comfortable margin instead of starving again a moment later.
       if (want > 0 && xStreamBufferIsEmpty(s_sb))
       {
         s_buf_underruns++;
-        s_buf_consecutive_underruns++;
-        ESP_LOGW(TAG_BUFFER, "AUDIO_BUFFER: UNDERRUN #%lu", (unsigned long)s_buf_underruns);
-        if (s_buf_consecutive_underruns >= STALL_UNDERRUN_THRESHOLD && !s_reconnect_requested)
+        ESP_LOGW(TAG_BUFFER, "AUDIO_BUFFER: UNDERRUN #%lu; waiting for refill to 50%%",
+                 (unsigned long)s_buf_underruns);
+        uint64_t wait_start_us = esp_timer_get_time();
+        while (!s_stop_requested && session_is_active(session.session_id) &&
+               xStreamBufferBytesAvailable(s_sb) < BUF_PREFILL_THRESHOLD)
         {
-          ESP_LOGE(TAG_BUFFER,
-                   "AUDIO_BUFFER: stalled for %d consecutive underruns; requesting reconnect",
-                   STALL_UNDERRUN_THRESHOLD);
-          s_reconnect_requested = true;
-          s_buf_consecutive_underruns = 0;
+          if (!s_fetch_running && xStreamBufferIsEmpty(s_sb))
+            break;
+          if ((uint64_t)(esp_timer_get_time() - wait_start_us) >= STALL_REFILL_TIMEOUT_US)
+          {
+            if (!s_reconnect_requested)
+            {
+              ESP_LOGE(TAG_BUFFER,
+                       "AUDIO_BUFFER: stalled waiting for refill; requesting reconnect");
+              s_reconnect_requested = true;
+            }
+            break;
+          }
+          vTaskDelay(pdMS_TO_TICKS(20));
         }
+        ESP_LOGD(TAG_BUFFER, "AUDIO_BUFFER: resumed after refill wait, fill=%zu / %d",
+                 xStreamBufferBytesAvailable(s_sb), STREAM_BUF_CAPACITY);
       }
       continue;
     }
-    s_buf_consecutive_underruns = 0;
     in_len += n;
 
     esp_audio_simple_dec_raw_t raw = {.buffer = in, .len = (uint32_t)in_len};

@@ -37,6 +37,7 @@ static QueueHandle_t s_ws_queue = NULL;
 static TaskHandle_t s_ws_worker_task = NULL;
 static web_gui_state_applied_cb_t s_state_applied_cb = NULL;
 static void* s_state_applied_ctx = NULL;
+static TaskHandle_t s_buffer_ticker_task = NULL;
 //-- Only one browser may be connected to /ws at a time; -1 means no client.
 static int s_active_ws_fd = -1;
 
@@ -130,6 +131,7 @@ static void web_gui_fill_state(cJSON* data)
   cJSON_AddNumberToObject(data, "volume", (double)radio_audio_get_volume());
   cJSON_AddBoolToObject(data, "playing", station_count > 0 && !radio_audio_is_paused());
   cJSON_AddBoolToObject(data, "streamConnected", true);
+  cJSON_AddNumberToObject(data, "bufferFill", (double)radio_audio_get_buffer_fill_percent());
   cJSON_AddStringToObject(data, "line1", s_current_line1);
   cJSON_AddStringToObject(data, "line2", s_current_line2);
   cJSON_AddStringToObject(data, "line3", s_current_line3);
@@ -466,6 +468,34 @@ static void web_gui_ws_broadcast(cJSON* root)
     }
   }
   free(payload);
+}
+
+//-- Ring-buffer fill changes continuously during normal playback, unlike
+//-- station/volume which only change on a real event, so it needs its own
+//-- lightweight periodic push instead of piggybacking on web_gui_fill_state()
+//-- (which is only broadcast on actual station/volume/track changes). Sends
+//-- a small standalone message so it never resets fields the browser wasn't
+//-- told about (requirement 11). Only broadcasts while a client is attached,
+//-- so an idle/disconnected device doesn't spin the httpd client list.
+#define BUFFER_TICKER_INTERVAL_MS 1000
+static void web_gui_buffer_ticker_task(void* arg)
+{
+  (void)arg;
+  for (;;)
+  {
+    vTaskDelay(pdMS_TO_TICKS(BUFFER_TICKER_INTERVAL_MS));
+    if (s_active_ws_fd < 0)
+    {
+      continue;
+    }
+    cJSON* root = cJSON_CreateObject();
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "bufferFill");
+    cJSON_AddItemToObject(root, "data", data);
+    cJSON_AddNumberToObject(data, "bufferFill", (double)radio_audio_get_buffer_fill_percent());
+    web_gui_ws_broadcast(root);
+    cJSON_Delete(root);
+  }
 }
 
 //-- Serves the raw stations.json file as a browser download (Manage Stations'
@@ -874,6 +904,11 @@ esp_err_t web_gui_init(void)
     httpd_stop(s_server);
     s_server = NULL;
     return ESP_ERR_NO_MEM;
+  }
+  if (xTaskCreate(web_gui_buffer_ticker_task, "web_gui_buf", 3072, NULL, 3,
+                  &s_buffer_ticker_task) != pdPASS)
+  {
+    ESP_LOGW(TAG, "Buffer-fill ticker task failed to start; live buffer %% will not update");
   }
 
   ESP_LOGI(TAG, "Web GUI started with WebSocket support on /ws");

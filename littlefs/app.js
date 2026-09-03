@@ -1,4 +1,4 @@
-const state = { stationIndex: 0, stationCount: 0, volume: 0, line1: '-', line2: '-', line3: '-', playing: false, streamConnected: false, station: null };
+const state = { stationIndex: 0, stationCount: 0, volume: 0, line1: '-', line2: '-', line3: '-', playing: false, streamConnected: false, station: null, bufferFill: null };
 let ws = null;
 let wsReady = false;
 let manageMode = 'view';
@@ -42,6 +42,7 @@ function showConnectionModal(title) {
   document.getElementById('line2').textContent = '-';
   document.getElementById('line3').textContent = '-';
   setStatus(title === 'Connection stalled' ? 'Reconnect required' : 'Connection lost');
+  setBufferFill(null);
 
   document.getElementById('takeoverModalTitle').textContent = title;
   document.getElementById('takeoverModal').classList.add('open');
@@ -53,6 +54,7 @@ function resetDisconnectedUi() {
   document.getElementById('line2').textContent = '-';
   document.getElementById('line3').textContent = '-';
   setStatus('Waiting for connection');
+  setBufferFill(null);
 }
 
 const INFO_MODAL_AUTO_DISMISS_MS = 3000;
@@ -96,6 +98,8 @@ function connectWs() {
         return;
       } else if (msg.type === 'error') {
         setStatus(msg.data && msg.data.message ? msg.data.message : 'Error');
+      } else if (msg.type === 'bufferFill') {
+        if (msg.data) setBufferFill(msg.data.bufferFill);
       } else if (msg.data) {
         applyState(msg.data);
       }
@@ -104,7 +108,16 @@ function connectWs() {
   };
 }
 
-function setStatus(msg) { document.getElementById('status').textContent = msg; }
+function setStatus(msg) { document.getElementById('statusText').textContent = msg; }
+
+//-- null/undefined hides the indicator (e.g. while disconnected); a number
+//-- shows the live network->decoder ring-buffer fill percentage.
+function setBufferFill(percent) {
+  state.bufferFill = (percent === null || percent === undefined) ? null : Number(percent);
+  const el = document.getElementById('bufferFillText');
+  if (!el) return;
+  el.textContent = state.bufferFill === null ? '' : ('Buffer ' + state.bufferFill + '%');
+}
 
 function stopBrowserAudio() {
   if (!browserAudio) return;
@@ -168,6 +181,7 @@ function applyState(data) {
     if (url && url !== browserAudioUrl) setBrowserAudio(true);
   }
   setStatus(state.streamConnected ? 'Connected' : 'Waiting for stream');
+  if (data.bufferFill !== undefined) setBufferFill(data.bufferFill);
   document.getElementById('playBtn').classList.toggle('primary', state.playing);
   document.getElementById('pauseBtn').classList.toggle('primary', !state.playing);
   if (manageMode === 'view') { fillManageFormFromCurrentStation(); }

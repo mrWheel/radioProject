@@ -30,7 +30,8 @@ button { appearance:none; border:1px solid var(--line); border-radius:14px; back
 .switch input:checked + .switch-slider::before { transform:translateX(24px); }
 input[type=range] { width:100%; accent-color:var(--accent); }
 .volume-value { min-width:54px; text-align:right; font-weight:700; color:var(--muted); }
-.status { margin-top:12px; min-height:20px; color:var(--muted); font-size:0.9rem; }
+.status { margin-top:12px; min-height:20px; color:var(--muted); font-size:0.9rem; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+.buffer-fill { font-variant-numeric:tabular-nums; }
 .modal { position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(15,23,42,0.2); padding:20px; }
 .modal.open { display:flex; }
 .modal-card { width:min(500px,100%); background:rgba(255,255,255,0.9); border:1px solid var(--line); border-radius:20px; padding:20px; box-shadow:0 30px 80px rgba(15,23,42,0.18); }
