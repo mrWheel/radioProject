@@ -18,6 +18,11 @@ from pathlib import Path
 
 
 TEMPLATE_REPO = "https://github.com/mrWheel/templateRepo"
+LOCAL_TEMPLATE_MARKERS = (
+    "thisProject.png",
+    ".github/workflows",
+    "tools/git-hooks",
+)
 
 
 # Default paths to sync from the template repository.
@@ -107,6 +112,10 @@ def _calc_sha256_for_compare(path: Path) -> str:
 
 def _is_tag_release_yml(path: Path) -> bool:
     return path.as_posix().endswith(".github/workflows/tag-release.yml")
+
+
+def _is_template_directory(path: Path) -> bool:
+    return all((path / marker).exists() for marker in LOCAL_TEMPLATE_MARKERS)
 
 
 def _merge_tag_release_env_values(template_text: str, existing_text: str) -> str:
@@ -708,9 +717,10 @@ def parse_args() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     )
     ap.add_argument(
         "--template",
-        default=TEMPLATE_REPO,
+        default=None,
         help=(
-            f"Template repo URL or local template directory (default: {TEMPLATE_REPO}). "
+            f"Template repo URL or local template directory (default: a recognized local template directory; "
+            f"fallback: {TEMPLATE_REPO}). "
             "When a local directory is provided, files are read from its current working tree."
         ),
     )
@@ -774,7 +784,15 @@ def main() -> int:
     pre_commit_ready = False
 
     try:
-        template_candidate = Path(args.template).expanduser()
+        if args.template:
+            template_candidate = Path(args.template).expanduser()
+        else:
+            local_template = Path(__file__).resolve().parent
+            template_candidate = (
+                local_template
+                if _is_template_directory(local_template)
+                else Path(TEMPLATE_REPO)
+            )
         tmp_ctx: tempfile.TemporaryDirectory[str] | None = None
 
         if template_candidate.exists() and template_candidate.is_dir():
@@ -785,8 +803,9 @@ def main() -> int:
             tmp = Path(tmp_ctx.name)
             template_dir = tmp / "template"
 
-            print(f"Cloning template: {args.template}")
-            run(["git", "clone", "--depth", "1", args.template, str(template_dir)])
+            template_source = args.template or TEMPLATE_REPO
+            print(f"Cloning template: {template_source}")
+            run(["git", "clone", "--depth", "1", template_source, str(template_dir)])
 
         total_copied = 0
         total_skipped = 0

@@ -161,6 +161,7 @@ function applyState(data) {
   state.streamConnected = !!data.streamConnected;
   state.station = data.station || null;
   if (state.station && state.station.name) document.getElementById('stationName').textContent = state.station.name;
+  if (data.version !== undefined) document.getElementById('progVersion').textContent = data.version;
   state.line1 = data.line1 ?? state.line1;
   state.line2 = data.line2 ?? state.line2;
   state.line3 = data.line3 ?? state.line3;

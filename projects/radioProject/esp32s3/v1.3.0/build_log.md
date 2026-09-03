@@ -1,13 +1,13 @@
 # Build log for ESP-IDF
 
-Generated: 2026-09-01T12:23:06
+Generated: 2026-09-03T15:20:58
 
 $ /Users/willema/.espressif/v6.0.2/esp-idf/tools/idf.py build
 Executing action: all (aliases: build)
 Running ninja in directory /Users/willema/Documents/espidfProjects.nosync/radioProject/build
 Executing "ninja all"...
 [1/5] cd /Users/willema/Documents/espidfProjects.nosync/radioProject/build && /Users/willema/.espressif/tools/python/v6.0.2/venv/bin/python /Users/willema/.espressif/v6.0.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /Users/willema/Documents/espidfProjects.nosync/radioProject/build/partition_table/partition-table.bin /Users/willema/Documents/espidfProjects.nosync/radioProject/build/radioProject.bin
-radioProject.bin binary size 0x1aa950 bytes. Smallest app partition is 0x200000 bytes. 0x556b0 bytes (17%) free.
+radioProject.bin binary size 0x1aaf70 bytes. Smallest app partition is 0x200000 bytes. 0x55090 bytes (17%) free.
 [2/5] Performing build step for 'bootloader'
 [1/1] cd /Users/willema/Documents/espidfProjects.nosync/radioProject/build/bootloader && /Users/willema/.espressif/tools/python/v6.0.2/venv/bin/python /Users/willema/.espressif/v6.0.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /Users/willema/Documents/espidfProjects.nosync/radioProject/build/bootloader/bootloader.bin
 Bootloader binary size 0x5240 bytes. 0x2dc0 bytes (36%) free.

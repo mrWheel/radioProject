@@ -14,6 +14,9 @@
 #define DISPLAY_TITLE_MAX 64
 #define DISPLAY_HEADER_H 36
 
+//-- Defined in main/app_main.c; shown right-aligned in the Volume header
+extern const char* PROG_VERSION;
+
 typedef enum
 {
   DISPLAY_MODE_VOLUME,
@@ -107,6 +110,25 @@ static void draw_header(uint16_t width, const char* text, int font_scale)
   tft_ec11_draw_text(4, y, (width - 8) / (6 * font_scale), text ? text : "");
 }
 
+//-- Right-aligned firmware version, smallest font (scale 1), drawn over the
+//-- already-painted header next to the station name.
+static void draw_header_version(uint16_t width)
+{
+  const int scale = 2;
+  int glyph_h = 8 * scale;
+  int y = (DISPLAY_HEADER_H - glyph_h) / 2;
+  if (y < 2)
+    y = 2;
+  const char* version = PROG_VERSION ? PROG_VERSION : "";
+  size_t len = strlen(version);
+  int x = (int)width - (int)len * 6 * scale - 4;
+  if (x < 0)
+    x = 0;
+  tft_ec11_set_background(TFT_EC11_BLUE);
+  tft_ec11_set_text_style(TFT_EC11_WHITE, scale);
+  tft_ec11_draw_text(x, y, len, version);
+}
+
 //-- Fixed 4-char slot ("100%" is the widest possible value) so the field's
 //-- own background-clear always wipes the previous digits, regardless of how
 //-- many digits the new value has, and the number no longer jitters
@@ -174,6 +196,7 @@ static void draw_volume_full(int volume, const char* station, const char* line1,
   tft_ec11_clear();
 
   draw_header(width, station, 3);
+  draw_header_version(width);
 
   int bar_x = 20, bar_y = 96, bar_w = width - 40, bar_h = 20;
   tft_ec11_fill_rect(bar_x, bar_y, bar_w, bar_h, TFT_EC11_WHITE);

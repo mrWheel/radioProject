@@ -122,10 +122,14 @@ static esp_err_t web_gui_response_json(httpd_req_t* req, const cJSON* json)
   return err;
 }
 
+//-- Defined in main/app_main.c; shown right-aligned in the web GUI's header
+extern const char* PROG_VERSION;
+
 static void web_gui_fill_state(cJSON* data)
 {
   size_t station_index = web_gui_station_index(s_current_station_index);
   size_t station_count = station_store_count();
+  cJSON_AddStringToObject(data, "version", PROG_VERSION ? PROG_VERSION : "");
   cJSON_AddNumberToObject(data, "stationIndex", (double)station_index);
   cJSON_AddNumberToObject(data, "stationCount", (double)station_count);
   cJSON_AddNumberToObject(data, "volume", (double)radio_audio_get_volume());

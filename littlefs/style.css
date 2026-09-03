@@ -3,6 +3,7 @@
 body { margin:0; min-height:100vh; font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',sans-serif; background:linear-gradient(180deg,#f4f4f8,#e9edf4); color:var(--text); display:flex; align-items:center; justify-content:center; padding:24px; }
 .window { width:min(720px,100%); background:var(--panel); border:1px solid var(--line); border-radius:24px; box-shadow:0 20px 50px var(--shadow); backdrop-filter:blur(18px); overflow:hidden; }
 .titlebar { display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--line); font-weight:600; }
+.prog-version { font-size:11px; font-weight:400; opacity:0.6; text-align:right; }
 .traffic { display:flex; gap:8px; }
 .traffic span { width:12px; height:12px; display:inline-block; border-radius:50%; background:#f0b646; }
 .traffic span:nth-child(1){background:#ff5f57;}

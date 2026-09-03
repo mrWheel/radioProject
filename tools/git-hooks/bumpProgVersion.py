@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-#-- Version Date: 25-02-2026 -- (dd-mm-eeyy)
+#-- Version Date: 03-09-2026 -- (dd-mm-eeyy)
 #
 #— Keep PROG_VERSION ("vX.Y.Z") and tools/PROG_VERSION.json in sync.
 
@@ -21,19 +21,24 @@ from typing import Optional
 #— We only extract/replace the first semantic version token vX.Y.Z.
 PROG_VERSION_LINE_REGEX = re.compile(
   r"""
+  ^(?![^;\n]*\bextern\b[^;\n]*\bPROG_VERSION\b)
   (?P<prefix>.*?\bPROG_VERSION\b.*?=\s*"?[^;\n]*?)
   v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)
   (?P<suffix>[^;\n]*"?\s*;.*)
   """,
-  re.VERBOSE,
+  re.MULTILINE | re.VERBOSE,
 )
 
 #— Fallback: allow formats where '=' and quotes differ, but still contain "vX.Y.Z"
-PROG_VERSION_ANYWHERE_REGEX = re.compile(r'\bPROG_VERSION\b[^\n;]*?v(\d+)\.(\d+)\.(\d+)')
+PROG_VERSION_ANYWHERE_REGEX = re.compile(
+  r'^(?![^;\n]*\bextern\b[^;\n]*\bPROG_VERSION\b)[^\n;]*?\bPROG_VERSION\b[^\n;]*?v(\d+)\.(\d+)\.(\d+)',
+  re.MULTILINE,
+)
 
 #— Fallback replacement: replace the first semantic version token after PROG_VERSION.
 PROG_VERSION_ANYWHERE_REPLACE_REGEX = re.compile(
-  r'(?P<prefix>\bPROG_VERSION\b[^\n;]*?)v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)'
+  r'^(?![^;\n]*\bextern\b[^;\n]*\bPROG_VERSION\b)(?P<prefix>[^\n;]*?\bPROG_VERSION\b[^\n;]*?)v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)',
+  re.MULTILINE,
 )
 
 
