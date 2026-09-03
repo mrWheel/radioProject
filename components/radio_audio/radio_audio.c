@@ -1047,20 +1047,25 @@ static void stream_task(void* arg)
         ESP_LOGW(TAG_BUFFER, "AUDIO_BUFFER: UNDERRUN #%lu; waiting for refill to 50%%",
                  (unsigned long)s_buf_underruns);
         uint64_t wait_start_us = esp_timer_get_time();
+        //-- Keep waiting until the buffer genuinely reaches the 50% cushion
+        //-- (or the stream truly ends). Previously this loop gave up and
+        //-- `break`-ed as soon as the 5s stall-reconnect timeout elapsed,
+        //-- even though the buffer was still far below 50%; playback then
+        //-- resumed on whatever few scraps had trickled in, drained again
+        //-- almost instantly, and re-triggered another underrun a moment
+        //-- later ("stukjes muziek" instead of a clean stop-and-wait). The
+        //-- reconnect request must still fire once after the timeout, but
+        //-- it must not cut the wait short.
         while (!s_stop_requested && session_is_active(session.session_id) &&
                xStreamBufferBytesAvailable(s_sb) < BUF_PREFILL_THRESHOLD)
         {
           if (!s_fetch_running && xStreamBufferIsEmpty(s_sb))
             break;
-          if ((uint64_t)(esp_timer_get_time() - wait_start_us) >= STALL_REFILL_TIMEOUT_US)
+          if (!s_reconnect_requested &&
+              (uint64_t)(esp_timer_get_time() - wait_start_us) >= STALL_REFILL_TIMEOUT_US)
           {
-            if (!s_reconnect_requested)
-            {
-              ESP_LOGE(TAG_BUFFER,
-                       "AUDIO_BUFFER: stalled waiting for refill; requesting reconnect");
-              s_reconnect_requested = true;
-            }
-            break;
+            ESP_LOGE(TAG_BUFFER, "AUDIO_BUFFER: stalled waiting for refill; requesting reconnect");
+            s_reconnect_requested = true;
           }
           vTaskDelay(pdMS_TO_TICKS(20));
         }
