@@ -82,11 +82,16 @@ static radio_audio_mute_cb_t s_mute_cb;
 static void* s_mute_ctx;
 static radio_audio_stall_cb_t s_stall_cb;
 static void* s_stall_ctx;
+//-- PCM5102A output level was reported too loud at every volume setting, so
+//-- an extra fixed attenuation is applied on top of the 0-100 volume percent
+//-- to halve the overall output amplitude.
+#define OUTPUT_GAIN_PERCENT 50
+
 static void apply_volume(int16_t* pcm, size_t samples)
 {
   int v = s_volume;
   for (size_t i = 0; i < samples; i++)
-    pcm[i] = (int16_t)(((int32_t)pcm[i] * v) / 100);
+    pcm[i] = (int16_t)(((int32_t)pcm[i] * v * OUTPUT_GAIN_PERCENT) / 10000);
 }
 
 static bool session_is_active(uint32_t session_id)
