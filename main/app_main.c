@@ -1,4 +1,5 @@
 #include "wifi_provisioner.h"
+#include "ota_upload.h"
 #include "radio_storage.h"
 #include "station_store.h"
 #include "radio_input.h"
@@ -17,7 +18,7 @@
 #include <string.h>
 
 //-- never remove this constant; it indicates the program version
-const char* PROG_VERSION = "v1.3.2";
+const char* PROG_VERSION = "v1.4.0";
 
 //-- How long the "Connected: SSID / IP" screen stays up before switching to
 //-- the Volume/PLAY screen, so the user can actually read it.
@@ -415,6 +416,12 @@ void app_main(void)
     show_volume();
     ESP_ERROR_CHECK(web_gui_init());
     web_gui_notify_device_state(s.playing);
+    //-- Started only after IP_EVENT_STA_GOT_IP has fired (guaranteed here,
+    //-- since wifi_prov_wait_for_connection() only returns ESP_OK once that
+    //-- event has been handled), so mDNS advertisement can succeed.
+    ota_upload_config_t ota_cfg = OTA_UPLOAD_CONFIG_DEFAULT();
+    ota_cfg.hostname = "radioproject";
+    ESP_ERROR_CHECK(ota_upload_start(&ota_cfg));
   }
   xTaskCreate(ui_task, "radio_ui", 4096, NULL, 6, NULL);
   xTaskCreate(buffer_monitor_task, "buf_mon", 2048, NULL, 5, NULL);

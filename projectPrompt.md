@@ -56,6 +56,12 @@ Build and maintain a production-oriented VS Code ESP-IDF internet-radio firmware
 
 18. The stations Download/Upload buttons (requirement 16) each confirm success to the user with a popup (`infoModal` in `littlefs/index.html`, `showInfoModal()`/`hideInfoModal()` in `littlefs/app.js`): shown after a successful download trigger or a successful import response, with an **OK** button that dismisses it immediately and an automatic dismiss after `INFO_MODAL_AUTO_DISMISS_MS` (3s) if the user doesn't click it. This reuses the existing `.modal`/`.modal-card`/`.modal-actions` styling from the takeover/stall popup (requirement 17) rather than introducing new CSS.
 
+19. Firmware can be updated over the local network instead of only by USB, using the `mrwheel/ota_upload` component (`main/idf_component.yml`, started via `ota_upload_start()` in `app_main()`).
+    - Only enabled on the 8MB flash partition table (`partitions/radio_8mb.csv`): this board is an ESP32-S3 **N8R8** (8MB flash / 8MB octal PSRAM), and a real OTA layout needs `otadata` plus two full app slots (`ota_0`/`ota_1`, 3MB each) — on 4MB flash, two safely-sized OTA slots would leave no room for `littlefs` (stations.json, web UI assets). `partitions/radio_4mb.csv` stays a plain single-`factory`-partition (non-OTA) table for smaller-flash boards.
+    - `ota_upload_start()` is called only after `wifi_prov_wait_for_connection()` returns `ESP_OK` (i.e. after `IP_EVENT_STA_GOT_IP` has already fired), since the component advertises itself over mDNS and needs the network already up; the mDNS hostname is `radioproject`.
+    - `mrwheel/ota_upload`'s own manifest depends on `michmich/esp-idf-wifi-provisioner`, which is already vendored locally at `components/wifi_provisioner`; `main/idf_component.yml` uses a top-level `overrides:` entry (not `override_path`, which requires the local directory name to match the dependency name) to point that transitive dependency at the local copy instead of fetching a second one into `managed_components/`.
+    - Per the standing instruction that firmware is never flashed/uploaded automatically, all actual OTA uploads (and USB flashing) remain a manual, user-run action; only `idf.py build`/`idf.py reconfigure` are run to verify compilation and partition fit.
+
 ## Hardware defaults
 
 - TFT BL 2, RST 4, CS 5, SCLK 12, MOSI 11, DC 15; 320×240
@@ -350,6 +356,7 @@ Do not assume that a URL that works in a browser is necessarily a direct audio s
 - [x] Raise the ring-buffer prefill threshold (`BUF_PREFILL_THRESHOLD` in `radio_audio.c`) from 25% to 50% of `STREAM_BUF_CAPACITY`, so playback only starts once the buffer is at least half full — trading a slightly longer startup wait for more margin against early network hiccups.
 - [x] Enforce a single active web GUI `/ws` client with a takeover popup ("Connection lost or taken over") plus Reconnect button on the evicted client, an active ping/pong heartbeat so an idle-but-healthy connection is never mistaken for stalled, a "Connection stalled" popup for genuinely dead connections, `Cache-Control: no-store` on the served UI assets, and enough httpd/LWIP socket headroom for concurrent browser page loads (see requirement 17).
 - [x] Fixed the buffer-underrun refill-wait in `stream_task()` (`radio_audio.c`) breaking early once the 5 s stall-reconnect timeout elapsed, even though the ring buffer was still far below the 50% cushion; playback then resumed on whatever scraps had trickled in and drained again almost immediately, producing short bursts of audio instead of a clean stop until refill (see requirement 15).
+- [x] Add OTA firmware upload over the local network via `mrwheel/ota_upload`, on the 8MB (N8R8) partition table only, started once WiFi has an IP (see requirement 19).
 
 ### Remaining / high-priority follow-up work
 
