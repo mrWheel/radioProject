@@ -126,7 +126,7 @@ esp_err_t station_store_load(char* err_msg, size_t err_msg_size)
     //-- cJSON_GetErrorPtr() points into `buf`, so compute the line
     //-- number before freeing it, to tell the user where the syntax
     //-- error is instead of just "invalid JSON". Reported as a separate
-    //-- line ("JSON syntax error" / "at line N") so radio_display_error()
+    //-- line (" error" / "at line N") so radio_display_error()
     //-- can colour only the first line red.
     const char* err_ptr = cJSON_GetErrorPtr();
     if (err_msg && err_ptr && err_ptr >= buf && err_ptr <= buf + n)
@@ -137,11 +137,11 @@ esp_err_t station_store_load(char* err_msg, size_t err_msg_size)
         if (*p == '\n')
           line++;
       }
-      snprintf(err_msg, err_msg_size, "JSON syntax error\nat line %d", line);
+      snprintf(err_msg, err_msg_size, " error\nat line %d", line);
     }
     else if (err_msg)
     {
-      snprintf(err_msg, err_msg_size, "JSON syntax error");
+      snprintf(err_msg, err_msg_size, " error");
     }
     free(buf);
     return ESP_ERR_INVALID_ARG;

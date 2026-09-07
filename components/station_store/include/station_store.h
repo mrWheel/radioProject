@@ -16,10 +16,10 @@ typedef struct
   radio_codec_t codec;
 } radio_station_t;
 //-- Loads stations.json. Never crashes on malformed input: on any failure
-//-- (missing file, oversized file, JSON syntax error, zero valid stations)
+//-- (missing file, oversized file,  error, zero valid stations)
 //-- the in-memory list is simply left empty and a human-readable
 //-- description is written to err_msg (if non-NULL) so the caller can show
-//-- it, e.g. line/column of a JSON syntax error.
+//-- it, e.g. line/column of a  error.
 esp_err_t station_store_load(char* err_msg, size_t err_msg_size);
 esp_err_t station_store_save(void);
 //-- Replaces the in-memory station list and the on-disk stations.json from an
