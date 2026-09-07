@@ -19,15 +19,17 @@
 #include <string.h>
 
 //-- never remove this constant; it indicates the program version
-const char* PROG_VERSION = "v1.4.1";
+const char* PROG_VERSION = "v1.4.2";
 
 //-- How long the "Connected: SSID / IP" screen stays up before switching to
 //-- the Volume/PLAY screen, so the user can actually read it.
 #define WIFI_CONNECTED_SPLASH_MS 2500
+#define TECHNICAL_INFO_TIMEOUT_MS 30000
 typedef enum
 {
   UI_VOLUME,
-  UI_STATION_SELECT
+  UI_STATION_SELECT,
+  UI_TECHNICAL
 } ui_mode_t;
 typedef struct
 {
@@ -36,6 +38,7 @@ typedef struct
   size_t playing;
   size_t selected;
   TickType_t last_rotation;
+  TickType_t technical_started;
 } app_state_t;
 static QueueHandle_t s_events;
 static app_state_t s = {.mode = UI_VOLUME, .volume = CONFIG_RADIO_DEFAULT_VOLUME};
@@ -252,6 +255,25 @@ static void show_volume(void)
   radio_display_volume(s.volume, st ? st->name : "");
 }
 
+static void show_technical(void)
+{
+  wifi_ap_record_t ap_info;
+  esp_netif_ip_info_t ip_info;
+  uint8_t mac[6] = {0};
+  char ssid[sizeof(ap_info.ssid) + 1] = "-";
+  char ip[24] = "-";
+  char mac_text[18];
+
+  if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK)
+    snprintf(ssid, sizeof(ssid), "%s", (const char*)ap_info.ssid);
+  if (wifi_prov_get_ip_info(&ip_info) == ESP_OK)
+    snprintf(ip, sizeof(ip), IPSTR, IP2STR(&ip_info.ip));
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  snprintf(mac_text, sizeof(mac_text), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2],
+           mac[3], mac[4], mac[5]);
+  radio_display_technical(ssid, ip, mac_text, s_mdns_hostname, station_store_count());
+}
+
 //-- Fired by radio_audio when fetch_task ends without a deliberate stop/switch
 //-- (connection open failed after all retries, or a mid-stream read/reconnect
 //-- failure) so the failure is visible instead of a stale "Switch Station .."
@@ -318,7 +340,19 @@ static void ui_task(void* arg)
       size_t count = station_store_count();
       if (e == RADIO_INPUT_AUX_PUSH)
       {
-        ESP_LOGI("radio", "Reserved AUX button pressed");
+        if (s.mode == UI_TECHNICAL)
+        {
+          s.mode = UI_VOLUME;
+          show_volume();
+        }
+        ESP_LOGI("radio", "AUX short press");
+        continue;
+      }
+      if (e == RADIO_INPUT_AUX_LONG_PUSH)
+      {
+        s.mode = UI_TECHNICAL;
+        s.technical_started = xTaskGetTickCount();
+        show_technical();
         continue;
       }
       if (e == RADIO_INPUT_EN_PUSH)
@@ -370,6 +404,12 @@ static void ui_task(void* arg)
     }
     if (s.mode == UI_STATION_SELECT &&
         xTaskGetTickCount() - s.last_rotation >= pdMS_TO_TICKS(CONFIG_RADIO_SELECTION_TIMEOUT_MS))
+    {
+      s.mode = UI_VOLUME;
+      show_volume();
+    }
+    if (s.mode == UI_TECHNICAL &&
+        xTaskGetTickCount() - s.technical_started >= pdMS_TO_TICKS(TECHNICAL_INFO_TIMEOUT_MS))
     {
       s.mode = UI_VOLUME;
       show_volume();

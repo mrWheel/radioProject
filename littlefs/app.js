@@ -13,7 +13,7 @@ let pendingButtons = [];
 let browserAudio = null;
 let browserAudioOn = false;
 let browserAudioUrl = null;
-let browserVolume = 100;
+let browserVolume = 40;
 
 function markPressed(btn) { if (!btn) return; btn.classList.remove('done'); btn.classList.add('pressed'); pendingButtons.push(btn); }
 function resolvePending() { pendingButtons.forEach((btn) => { btn.classList.remove('pressed'); btn.classList.add('done'); setTimeout(() => btn.classList.remove('done'), 400); }); pendingButtons = []; }

@@ -9,7 +9,9 @@ Native ESP-IDF 5.2+ project for VS Code, the TFT-LCD-Display-EC11 piggyback boar
 - Rotate to browse; only rotation resets the 20-second inactivity timer.
 - Press EN-push to start the highlighted station and return to Volume.
 - After 20 seconds without rotation, selection is cancelled and Volume returns.
-- GPIO 1 is a reserved, debounced auxiliary button; it currently only logs an event.
+- A medium/long press on the GPIO 1 auxiliary button shows a technical-information screen with
+	firmware version, SSID, IP address, MAC address, hostname and station count. A short press or
+	30-second timeout returns to Volume.
 - `stations.json` is uploaded in the LittleFS image.
 
 ## Prerequisites

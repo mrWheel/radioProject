@@ -13,6 +13,7 @@
 #define DISPLAY_STATUS_MAX 96
 #define DISPLAY_TITLE_MAX 64
 #define DISPLAY_HEADER_H 36
+#define DISPLAY_TECH_VALUE_MAX 96
 
 //-- Defined in main/app_main.c; shown right-aligned in the Volume header
 extern const char* PROG_VERSION;
@@ -22,6 +23,7 @@ typedef enum
   DISPLAY_MODE_VOLUME,
   DISPLAY_MODE_STATION_SELECT,
   DISPLAY_MODE_STATUS,
+  DISPLAY_MODE_TECHNICAL,
   DISPLAY_MODE_TITLE,
   DISPLAY_MODE_BUFFER_FILL
 } display_mode_t;
@@ -37,6 +39,11 @@ typedef struct
   char line2[DISPLAY_TITLE_MAX];
   char line3[DISPLAY_TITLE_MAX];
   int buffer_fill;
+  char ssid[DISPLAY_TECH_VALUE_MAX];
+  char ip[DISPLAY_TECH_VALUE_MAX];
+  char mac[DISPLAY_TECH_VALUE_MAX];
+  char hostname[DISPLAY_TECH_VALUE_MAX];
+  size_t station_count;
 } display_message_t;
 
 static QueueHandle_t s_queue;
@@ -359,6 +366,37 @@ static void draw_status(const char* status)
   }
 }
 
+static void draw_technical(const display_message_t* message)
+{
+  uint16_t width = tft_ec11_width();
+  uint16_t height = tft_ec11_height();
+  const int scale = 2;
+  const int line_h = 8 * scale + 5;
+  char lines[6][DISPLAY_TECH_VALUE_MAX];
+  snprintf(lines[0], sizeof(lines[0]), "InternetRadio %s", PROG_VERSION ? PROG_VERSION : "");
+  snprintf(lines[1], sizeof(lines[1]), "SSID: %.88s", message->ssid);
+  snprintf(lines[2], sizeof(lines[2]), "IP: %.90s", message->ip);
+  snprintf(lines[3], sizeof(lines[3]), "MAC: %.89s", message->mac);
+  snprintf(lines[4], sizeof(lines[4]), "Host: %.88s", message->hostname);
+  snprintf(lines[5], sizeof(lines[5]), "Stations: %u", (unsigned)message->station_count);
+
+  tft_ec11_set_background(TFT_EC11_BLACK);
+  tft_ec11_clear();
+  for (size_t i = 0; i < 6; i++)
+  {
+    size_t max_chars = (width - 8) / (6 * scale);
+    size_t length = strlen(lines[i]);
+    if (length > max_chars)
+      length = max_chars;
+    int x = ((int)width - (int)length * 6 * scale) / 2;
+    int y = ((int)height - 6 * line_h) / 2 + (int)i * line_h;
+    if (x < 0)
+      x = 0;
+    tft_ec11_set_text_style(i == 0 ? TFT_EC11_CYAN : TFT_EC11_WHITE, scale);
+    tft_ec11_draw_text(x, y, length, lines[i]);
+  }
+}
+
 static void display_task(void* argument)
 {
   display_message_t message;
@@ -413,6 +451,10 @@ static void display_task(void* argument)
     case DISPLAY_MODE_STATUS:
       s_current_mode = DISPLAY_MODE_STATUS;
       draw_status(message.status);
+      break;
+    case DISPLAY_MODE_TECHNICAL:
+      s_current_mode = DISPLAY_MODE_TECHNICAL;
+      draw_technical(&message);
       break;
     case DISPLAY_MODE_BUFFER_FILL:
       //-- Only meaningful on the Volume screen where the bar lives;
@@ -483,6 +525,18 @@ void radio_display_status(const char* status)
   if (status)
     snprintf(message.status, sizeof(message.status), "%s", status);
   ESP_LOGI("display", "%s", status ? status : "");
+  if (s_queue)
+    (void)xQueueSend(s_queue, &message, 0);
+}
+
+void radio_display_technical(const char* ssid, const char* ip, const char* mac,
+                             const char* hostname, size_t station_count)
+{
+  display_message_t message = {.mode = DISPLAY_MODE_TECHNICAL, .station_count = station_count};
+  snprintf(message.ssid, sizeof(message.ssid), "%s", ssid ? ssid : "-");
+  snprintf(message.ip, sizeof(message.ip), "%s", ip ? ip : "-");
+  snprintf(message.mac, sizeof(message.mac), "%s", mac ? mac : "-");
+  snprintf(message.hostname, sizeof(message.hostname), "%s", hostname ? hostname : "-");
   if (s_queue)
     (void)xQueueSend(s_queue, &message, 0);
 }
