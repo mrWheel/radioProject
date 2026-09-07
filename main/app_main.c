@@ -9,6 +9,7 @@
 #include "web_gui.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -18,7 +19,7 @@
 #include <string.h>
 
 //-- never remove this constant; it indicates the program version
-const char* PROG_VERSION = "v1.4.0";
+const char* PROG_VERSION = "v1.4.1";
 
 //-- How long the "Connected: SSID / IP" screen stays up before switching to
 //-- the Volume/PLAY screen, so the user can actually read it.
@@ -38,6 +39,18 @@ typedef struct
 } app_state_t;
 static QueueHandle_t s_events;
 static app_state_t s = {.mode = UI_VOLUME, .volume = CONFIG_RADIO_DEFAULT_VOLUME};
+//-- Filled once in app_main() from the last 3 MAC bytes; the AP SSID uses
+//-- colons, the mDNS hostname uses dashes since DNS labels can't hold colons.
+static char s_ap_ssid[32];
+static char s_mdns_hostname[32];
+
+//-- Builds "Radio-<b3><sep><b2><sep><b1>" from the station MAC's last 3 bytes.
+static void build_device_name(char* out, size_t out_len, char sep)
+{
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  snprintf(out, out_len, "Radio-%02X%c%02X%c%02X", mac[3], sep, mac[4], sep, mac[5]);
+}
 static void input_cb(radio_input_event_t e, void* ctx)
 {
   (void)ctx;
@@ -292,7 +305,7 @@ static void on_wifi_connected(void)
 static void on_wifi_portal_start(void)
 {
   char msg[96];
-  snprintf(msg, sizeof(msg), "Connect to WiFi '%s' to configure", CONFIG_WIFI_PROV_AP_SSID);
+  snprintf(msg, sizeof(msg), "Connect to WiFi '%s' to configure", s_ap_ssid);
   radio_display_status(msg);
 }
 static void ui_task(void* arg)
@@ -404,7 +417,10 @@ void app_main(void)
   web_gui_set_state_applied_cb(on_web_gui_state_applied, NULL);
   s_events = xQueueCreate(12, sizeof(radio_input_event_t));
   ESP_ERROR_CHECK(radio_input_start(input_cb, NULL));
+  build_device_name(s_ap_ssid, sizeof(s_ap_ssid), ':');
+  build_device_name(s_mdns_hostname, sizeof(s_mdns_hostname), '-');
   wifi_prov_config_t wc = WIFI_PROV_DEFAULT_CONFIG();
+  wc.ap_ssid = s_ap_ssid;
   wc.on_connected = on_wifi_connected;
   wc.on_portal_start = on_wifi_portal_start;
   radio_display_status("Connecting to WiFi");
@@ -420,7 +436,7 @@ void app_main(void)
     //-- since wifi_prov_wait_for_connection() only returns ESP_OK once that
     //-- event has been handled), so mDNS advertisement can succeed.
     ota_upload_config_t ota_cfg = OTA_UPLOAD_CONFIG_DEFAULT();
-    ota_cfg.hostname = "radioproject";
+    ota_cfg.hostname = s_mdns_hostname;
     ESP_ERROR_CHECK(ota_upload_start(&ota_cfg));
   }
   xTaskCreate(ui_task, "radio_ui", 4096, NULL, 6, NULL);

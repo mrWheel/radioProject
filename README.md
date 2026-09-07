@@ -31,7 +31,7 @@ idf.py -p /dev/ttyUSB0 flash monitor
 
 The build uses the custom 4 MB partition table and automatically creates and flashes the `storage` LittleFS partition from `littlefs/`.
 
-On first boot, connect to the `Internet-Radio-Setup` access point. The captive portal stores Wi-Fi credentials in NVS.
+On first boot, connect to the `Radio-XX:XX:XX` access point, where `XX:XX:XX` are the last 3 bytes of the ESP32's MAC address. The same identifier (with dashes instead of colons) is used as the device's mDNS hostname (`Radio-XX-XX-XX.local`). The captive portal stores Wi-Fi credentials in NVS.
 
 ## Edit stations
 
