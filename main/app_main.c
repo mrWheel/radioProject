@@ -19,7 +19,7 @@
 #include <string.h>
 
 //-- never remove this constant; it indicates the program version
-const char* PROG_VERSION = "v1.4.2";
+const char* PROG_VERSION = "v1.4.3";
 
 //-- How long the "Connected: SSID / IP" screen stays up before switching to
 //-- the Volume/PLAY screen, so the user can actually read it.
@@ -439,7 +439,36 @@ void app_main(void)
 {
   ESP_ERROR_CHECK(radio_settings_init());
   ESP_ERROR_CHECK(radio_storage_mount());
-  ESP_ERROR_CHECK(station_store_load());
+  ESP_ERROR_CHECK(radio_display_init());
+
+  //-- Input must be ready before the possible ERROR screen below, so a
+  //-- button press or encoder rotation can dismiss it.
+  s_events = xQueueCreate(12, sizeof(radio_input_event_t));
+  ESP_ERROR_CHECK(radio_input_start(input_cb, NULL));
+
+  //-- A malformed/missing stations.json must never crash the device: show an
+  //-- ERROR screen with the reason (e.g. JSON line/char) and boot on with an
+  //-- empty station list instead. The web GUI's stations import/Manage
+  //-- Stations can still be used to fix the file over the network. The
+  //-- screen stays up until the user presses a button or turns the encoder.
+  char station_err[96];
+  esp_err_t station_err_code = station_store_load(station_err, sizeof(station_err));
+  if (station_err_code != ESP_OK)
+  {
+    ESP_LOGE("app_main", "stations.json: %s", station_err);
+    char station_err_screen[160];
+    snprintf(station_err_screen, sizeof(station_err_screen), "%s\nLoad stations.json via the GUI",
+             station_err);
+    radio_display_error(station_err_screen);
+    radio_input_event_t e;
+    xQueueReceive(s_events, &e, portMAX_DELAY);
+    //-- Drain any extra events (e.g. a burst of rotation ticks) so they
+    //-- don't leak into the Volume screen right after boot.
+    while (xQueueReceive(s_events, &e, 0) == pdTRUE)
+    {
+    }
+  }
+
   size_t saved_station = 0;
   radio_settings_load(&saved_station);
   size_t count = station_store_count();
@@ -447,7 +476,6 @@ void app_main(void)
   {
     s.playing = s.selected = saved_station;
   }
-  ESP_ERROR_CHECK(radio_display_init());
   radio_display_status("");
   ESP_ERROR_CHECK(radio_audio_init());
   radio_audio_set_volume(s.volume);
@@ -455,8 +483,6 @@ void app_main(void)
   radio_audio_set_mute_callback(on_audio_mute_changed, NULL);
   radio_audio_set_stall_callback(stall_cb, NULL);
   web_gui_set_state_applied_cb(on_web_gui_state_applied, NULL);
-  s_events = xQueueCreate(12, sizeof(radio_input_event_t));
-  ESP_ERROR_CHECK(radio_input_start(input_cb, NULL));
   build_device_name(s_ap_ssid, sizeof(s_ap_ssid), ':');
   build_device_name(s_mdns_hostname, sizeof(s_mdns_hostname), '-');
   wifi_prov_config_t wc = WIFI_PROV_DEFAULT_CONFIG();

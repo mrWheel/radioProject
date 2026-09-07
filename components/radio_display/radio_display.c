@@ -14,6 +14,7 @@
 #define DISPLAY_TITLE_MAX 64
 #define DISPLAY_HEADER_H 36
 #define DISPLAY_TECH_VALUE_MAX 96
+#define DISPLAY_ERROR_MAX_LINES 6
 
 //-- Defined in main/app_main.c; shown right-aligned in the Volume header
 extern const char* PROG_VERSION;
@@ -25,7 +26,8 @@ typedef enum
   DISPLAY_MODE_STATUS,
   DISPLAY_MODE_TECHNICAL,
   DISPLAY_MODE_TITLE,
-  DISPLAY_MODE_BUFFER_FILL
+  DISPLAY_MODE_BUFFER_FILL,
+  DISPLAY_MODE_ERROR
 } display_mode_t;
 
 typedef struct
@@ -366,6 +368,89 @@ static void draw_status(const char* status)
   }
 }
 
+//-- Same layout as draw_status() (word-wrap on '\n' and screen width) but a
+//-- red "ERROR" header, so a malformed stations.json is unmistakable instead
+//-- of looking like a normal status message.
+static void draw_error(const char* status)
+{
+  uint16_t width = tft_ec11_width();
+  uint16_t height = tft_ec11_height();
+  const int scale = 3;
+  size_t slot_chars = (width - 8) / (6 * scale);
+  const int line_h = 8 * scale + 4;
+
+  tft_ec11_set_background(TFT_EC11_BLACK);
+  tft_ec11_clear();
+  draw_header(width, "ERROR", scale);
+
+  const char* text = status ? status : "";
+
+  //-- Only the first '\n'-separated segment (the actual error, e.g. "JSON
+  //-- syntax error") is drawn in red; any further segments (hints such as
+  //-- "at line N" / "Load stations.json via the GUI") are white. Each
+  //-- segment is fully word-wrapped across as many lines as it needs -
+  //-- unlike a single split, so nothing runs off the right edge of the
+  //-- screen or gets silently dropped.
+  char lines[DISPLAY_ERROR_MAX_LINES][DISPLAY_STATUS_MAX];
+  bool line_is_error[DISPLAY_ERROR_MAX_LINES];
+  int line_count = 0;
+  const char* seg = text;
+  int seg_index = 0;
+  while (*seg && line_count < DISPLAY_ERROR_MAX_LINES)
+  {
+    const char* nl = strchr(seg, '\n');
+    size_t seg_len = nl ? (size_t)(nl - seg) : strlen(seg);
+    if (seg_len >= DISPLAY_STATUS_MAX)
+      seg_len = DISPLAY_STATUS_MAX - 1;
+
+    size_t offset = 0;
+    while (offset < seg_len && line_count < DISPLAY_ERROR_MAX_LINES)
+    {
+      size_t remaining = seg_len - offset;
+      size_t take = remaining;
+      if (take > slot_chars)
+      {
+        size_t split = slot_chars;
+        while (split > 0 && seg[offset + split] != ' ')
+          split--;
+        take = (split == 0) ? slot_chars : split;
+      }
+      memcpy(lines[line_count], seg + offset, take);
+      lines[line_count][take] = '\0';
+      line_is_error[line_count] = (seg_index == 0);
+      line_count++;
+      offset += take;
+      while (offset < seg_len && seg[offset] == ' ')
+        offset++;
+    }
+
+    seg = nl ? nl + 1 : seg + strlen(seg);
+    seg_index++;
+  }
+  if (line_count == 0)
+  {
+    lines[0][0] = '\0';
+    line_is_error[0] = true;
+    line_count = 1;
+  }
+
+  int content_top = DISPLAY_HEADER_H + 8;
+  int total_h = line_count * line_h;
+  int y = content_top + (((int)height - content_top - total_h) / 2);
+  if (y < content_top)
+    y = content_top;
+
+  for (int i = 0; i < line_count; i++)
+  {
+    size_t len = strlen(lines[i]);
+    int x = ((int)width - (int)len * 6 * scale) / 2;
+    if (x < 0)
+      x = 0;
+    tft_ec11_set_text_style(line_is_error[i] ? TFT_EC11_RED : TFT_EC11_WHITE, scale);
+    tft_ec11_draw_text(x, y + i * line_h, len, lines[i]);
+  }
+}
+
 static void draw_technical(const display_message_t* message)
 {
   uint16_t width = tft_ec11_width();
@@ -452,6 +537,10 @@ static void display_task(void* argument)
       s_current_mode = DISPLAY_MODE_STATUS;
       draw_status(message.status);
       break;
+    case DISPLAY_MODE_ERROR:
+      s_current_mode = DISPLAY_MODE_ERROR;
+      draw_error(message.status);
+      break;
     case DISPLAY_MODE_TECHNICAL:
       s_current_mode = DISPLAY_MODE_TECHNICAL;
       draw_technical(&message);
@@ -525,6 +614,16 @@ void radio_display_status(const char* status)
   if (status)
     snprintf(message.status, sizeof(message.status), "%s", status);
   ESP_LOGI("display", "%s", status ? status : "");
+  if (s_queue)
+    (void)xQueueSend(s_queue, &message, 0);
+}
+
+void radio_display_error(const char* message_text)
+{
+  display_message_t message = {.mode = DISPLAY_MODE_ERROR};
+  if (message_text)
+    snprintf(message.status, sizeof(message.status), "%s", message_text);
+  ESP_LOGE("display", "%s", message_text ? message_text : "");
   if (s_queue)
     (void)xQueueSend(s_queue, &message, 0);
 }
