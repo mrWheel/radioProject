@@ -1,9 +1,6 @@
-#!/usr/bin/env python3
-from __future__ import annotations
-
+#!/usr/bin/env python3.12
 import argparse
 import datetime as dt
-import hashlib
 import json
 import re
 import shutil
@@ -14,17 +11,21 @@ import os
 import urllib.request
 from pathlib import Path
 
-scriptVersion = "v2.8 (2026-08-14)"
-configFilePath = Path("~/.ssh/createProjectStructure.json").expanduser()
-defaultsMarkerName = ".createProjectStructure-defaults.json"
+scriptVersion = "v2.10 (2026-09-06)"
+defaultAwsServer = "admin@aandewiel.nl"
+defaultAwsTarget = "/home/admin/flasherWebsite_v3"
+defaultAwsSshKey = "~/.ssh/LightsailDefaultKey-eu-central-1.pem"
+defaultProjectImageUrl = "https://flasher.aandewiel.nl/projects/ESP32project.png"
 
 versionPattern = re.compile(r"v\d+\.\d+\.\d+")
 envSectionPattern = re.compile(r"^\s*\[\s*env:([^\]]+)\s*\]\s*$")
 semverPattern = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 versionWithPrefixPattern = re.compile(r"[vV](\d+\.\d+\.\d+)")
-shortVersionPattern = re.compile(r"(?<!\d)[vV]?(\d+\.\d+(?:\.\d+)?)(?!\d)")
 workspaceDirPattern = re.compile(r"^\s*workspace_dir\s*=\s*(.+?)\s*$", re.IGNORECASE)
 fsStartPattern = re.compile(r"_FS_start\s*=\s*(0x[0-9a-fA-F]+|\d+)")
+envNotePattern = re.compile(r"^\s*[;#]\s*note\s*:\s*(.*?)\s*$", re.IGNORECASE)
+commentLinePattern = re.compile(r"^\s*[;#](.*)$")
+partitionTableFilenamePattern = re.compile(r'^CONFIG_PARTITION_TABLE_FILENAME="([^"]+)"', re.MULTILINE)
 
 
 def parsePlatformioSections(platformioIni: Path) -> dict[str, dict[str, str]]:
@@ -55,8 +56,7 @@ def parsePlatformioSections(platformioIni: Path) -> dict[str, dict[str, str]]:
 
 
 def getEnvConfigValue(
-    sections: dict[str, dict[str, str]], envName: str, key: str
-) -> str | None:
+    sections: dict[str, dict[str, str]], envName: str, key: str) -> str | None:
     normalizedKey = key.strip().lower()
     envSection = f"env:{envName}".lower()
 
@@ -272,7 +272,7 @@ def detectFirmwareOffset(partitions: dict[str, dict[str, str]], socFamily: str) 
 
 
 def detectFilesystemOffset(partitions: dict[str, dict[str, str]]) -> str | None:
-    directNames = ["spiffs", "littlefs", "fatfs"]
+    directNames = ["spiffs", "littlefs", "fatfs", "storage"]
     for name in directNames:
         if name in partitions and partitions[name].get("offset"):
             return partitions[name]["offset"]
@@ -353,10 +353,8 @@ def generateFlashJson(
         flashFiles.append({"offset": firmwareOffset, "file": "firmware.bin"})
 
     filesystemFile = None
-    if (targetVersionDir / "LittleFS.bin").exists():
-        filesystemFile = "LittleFS.bin"
-    elif (targetVersionDir / "spiffs.bin").exists():
-        filesystemFile = "spiffs.bin"
+    if (targetVersionDir / "storage.bin").exists():
+        filesystemFile = "storage.bin"
 
     if filesystemFile:
         filesystemOffset = detectFilesystemOffset(partitions)
@@ -406,8 +404,73 @@ def parseEnvs(platformioIni: Path) -> list[str]:
     return uniqueEnvs
 
 
-def shouldSkipEnv(envName: str) -> bool:
-    return "skip" in envName.lower()
+def parseEnvNotes(platformioIni: Path) -> dict[str, str]:
+    envNotes: dict[str, str] = {}
+    pendingNextEnvNote = None
+    currentEnv = None
+    lines = platformioIni.read_text(encoding="utf-8", errors="ignore").splitlines()
+    index = 0
+
+    while index < len(lines):
+        rawLine = lines[index]
+        line = rawLine.strip()
+
+        envMatch = envSectionPattern.match(line)
+        if envMatch:
+            currentEnv = envMatch.group(1).strip()
+            if pendingNextEnvNote and currentEnv and currentEnv not in envNotes:
+                envNotes[currentEnv] = pendingNextEnvNote
+            pendingNextEnvNote = None
+            index += 1
+            continue
+
+        genericSectionMatch = re.match(r"^\s*\[(.+)\]\s*$", line)
+        if genericSectionMatch:
+            currentEnv = None
+            index += 1
+            continue
+
+        noteMatch = envNotePattern.match(rawLine)
+        if noteMatch:
+            collectedChunks: list[str] = []
+            firstChunk = noteMatch.group(1).strip()
+            if firstChunk:
+                collectedChunks.append(firstChunk)
+
+            probeIndex = index + 1
+            while probeIndex < len(lines):
+                probeLineRaw = lines[probeIndex]
+                probeLine = probeLineRaw.strip()
+
+                if re.match(r"^\s*\[.+\]\s*$", probeLine):
+                    break
+
+                if not probeLine:
+                    probeIndex += 1
+                    continue
+
+                probeCommentMatch = commentLinePattern.match(probeLineRaw)
+                if not probeCommentMatch:
+                    break
+
+                probeChunk = probeCommentMatch.group(1).strip()
+                if probeChunk and not re.match(r"^note\s*:", probeChunk, re.IGNORECASE):
+                    collectedChunks.append(probeChunk)
+                probeIndex += 1
+
+            mergedNote = " ".join([chunk for chunk in collectedChunks if chunk]).strip()
+            if mergedNote:
+                if currentEnv:
+                    envNotes[currentEnv] = mergedNote
+                else:
+                    pendingNextEnvNote = mergedNote
+
+            index = probeIndex
+            continue
+
+        index += 1
+
+    return envNotes
 
 
 def getWorkspaceDir(platformioIni: Path, projectPath: Path) -> Path:
@@ -447,70 +510,44 @@ def getWorkspaceDir(platformioIni: Path, projectPath: Path) -> Path:
     return resolved
 
 
-def loadPrivateConfig(requiredKeys: list[str]) -> dict[str, str]:
-    if not configFilePath.is_file():
-        templatePath = Path(".createProjectStructure-defaults.json").resolve()
-        examplePayload = {
-            "aws_server": "<user>@yourServer>",
-            "aws_target": "<targetDirectory on the server>",
-            "aws_ssh_key": "~/.ssh/<yourServerPemFile>.pem",
-            "project_image_url": "<URL to your flasherProject.png>",
-        }
-        raise RuntimeError(
-            f"Private configuration file not found: {configFilePath}\n"
-            "Create it as JSON with the layout shown in "
-            f"{templatePath}\n"
-            "Required keys: " + ", ".join(requiredKeys) + "\n"
-            "Example:\n"
-            + json.dumps(examplePayload, indent=2)
-        )
-    try:
-        payload = json.loads(configFilePath.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Cannot read private configuration {configFilePath}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"Private configuration must contain a JSON object: {configFilePath}")
-    missing = [key for key in requiredKeys if not isinstance(payload.get(key), str) or not payload[key].strip()]
-    if missing:
-        raise RuntimeError(
-            f"Private configuration {configFilePath} is missing: {', '.join(missing)}"
-        )
-    return {key: str(value) for key, value in payload.items()}
+def normalizeVersion(versionValue: str) -> str:
+    match = semverPattern.search(versionValue)
+    if not match:
+        return "v0.0.0"
+    return f"v{match.group(1)}.{match.group(2)}.{match.group(3)}"
 
 
 def detectVersion(projectPath: Path) -> str:
-    candidates = [
-        projectPath / "src" / "main.cpp",
-        projectPath / "src" / "main.c",
-        projectPath / "main" / "main.cpp",
-        projectPath / "main" / "main.c",
-        projectPath / "main" / "app_main.c",
-        projectPath / "main.cpp",
-        projectPath / "main.c",
-    ]
-    candidates.extend(sorted(projectPath.glob("*/main.cpp")))
-    candidates.extend(sorted(projectPath.glob("*/main.c")))
-    mainSource = next((path for path in candidates if path.is_file()), None)
-    if mainSource is None:
-        raise RuntimeError(
-            "Version check failed: main.c or main.cpp was not found. The project must contain "
-            "PROG_VERSION with a version such as 1.2, v1.2, 1.2.3, or v1.2.3."
-        )
-    text = mainSource.read_text(encoding="utf-8", errors="ignore")
-    if "PROG_VERSION" not in text:
-        raise RuntimeError(
-            f"Version check failed: {mainSource} does not contain the literal PROG_VERSION."
-        )
-    for line in text.splitlines():
-        if "PROG_VERSION" not in line:
+    #-- PlatformIO sources live under src/, ESP-IDF sources live under main/
+    for srcDir in (projectPath / "src", projectPath / "main"):
+        if not srcDir.is_dir():
             continue
-        match = shortVersionPattern.search(line)
-        if match:
-            return f"v{match.group(1)}"
-    raise RuntimeError(
-        f"Version check failed: PROG_VERSION in {mainSource} must contain X.Y or X.Y.Z. "
-        "An optional lowercase or uppercase V prefix is accepted."
-    )
+
+        for filePath in sorted(srcDir.rglob("*")):
+            if not filePath.is_file():
+                continue
+
+            text = filePath.read_text(encoding="utf-8", errors="ignore")
+            if "PROG_VERSION" not in text:
+                continue
+
+            for line in text.splitlines():
+                if "PROG_VERSION" not in line:
+                    continue
+
+                prefixedMatch = versionWithPrefixPattern.search(line)
+                if prefixedMatch:
+                    return f"v{prefixedMatch.group(1)}"
+
+                semverMatch = semverPattern.search(line)
+                if semverMatch:
+                    return f"v{semverMatch.group(1)}.{semverMatch.group(2)}.{semverMatch.group(3)}"
+
+                fallbackMatch = versionPattern.search(line)
+                if fallbackMatch:
+                    return normalizeVersion(fallbackMatch.group(0))
+
+    return "v0.0.0"
 
 
 def runCommand(cmd: list[str], cwd: Path, logLines: list[str]) -> None:
@@ -550,14 +587,6 @@ def discoverBuildDir(projectRoot: Path, workspaceDir: Path, envName: str) -> Pat
     )
 
 
-def fileSha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def ensureProjectMetaDataDefaults(rootDir: Path) -> Path:
     metaDataDir = rootDir / "projectMetaData"
     if metaDataDir.exists() and metaDataDir.is_dir():
@@ -586,73 +615,13 @@ def ensureProjectMetaDataDefaults(rootDir: Path) -> Path:
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
 
-    privateConfig = loadPrivateConfig(["project_image_url"])
     targetImage = metaDataDir / "thisProject.png"
     try:
-        urllib.request.urlretrieve(privateConfig["project_image_url"], str(targetImage))
+        urllib.request.urlretrieve(defaultProjectImageUrl, str(targetImage))
     except Exception:
         targetImage.touch()
 
-    generatedFiles = ["project_en.md", "project_nl.md", "project.json"]
-    markerPayload = {
-        "generated_defaults": {
-            name: fileSha256(metaDataDir / name) for name in generatedFiles
-        }
-    }
-    (metaDataDir / defaultsMarkerName).write_text(
-        json.dumps(markerPayload, indent=2) + "\n", encoding="utf-8"
-    )
-
     return metaDataDir
-
-
-def validateProjectMetaData(metaDataDir: Path) -> None:
-    requiredFiles = ["project_en.md", "project_nl.md", "project.json"]
-    missing = [name for name in requiredFiles if not (metaDataDir / name).is_file()]
-    if not (metaDataDir / "thisProject.png").is_file() and not (metaDataDir / "ESP32project.png").is_file():
-        missing.append("thisProject.png")
-    if missing:
-        raise RuntimeError(
-            f"Project metadata is incomplete in {metaDataDir}. Missing: {', '.join(missing)}"
-        )
-    unchangedDefaults: list[str] = []
-    markerPath = metaDataDir / defaultsMarkerName
-    if markerPath.is_file():
-        try:
-            marker = json.loads(markerPath.read_text(encoding="utf-8"))
-            hashes = marker.get("generated_defaults", {})
-            for name, originalHash in hashes.items():
-                if name in {"thisProject.png", "ESP32project.png"}:
-                    continue
-                path = metaDataDir / name
-                if path.is_file() and fileSha256(path) == originalHash:
-                    unchangedDefaults.append(name)
-        except (OSError, json.JSONDecodeError, AttributeError):
-            unchangedDefaults.append(defaultsMarkerName)
-
-    placeholderTokens = {
-        "project_en.md": ["your_project_name", "Discription in English"],
-        "project_nl.md": ["your_project_name", "Beschrijving van het project in Dutch"],
-        "project.json": ["your_project_name", "Langere naam in Dutch", "longer name in English"],
-    }
-    for name, tokens in placeholderTokens.items():
-        content = (metaDataDir / name).read_text(encoding="utf-8", errors="ignore")
-        if any(token in content for token in tokens) and name not in unchangedDefaults:
-            unchangedDefaults.append(name)
-    if unchangedDefaults and not markerPath.is_file():
-        trackedNames = requiredFiles
-        markerPayload = {
-            "generated_defaults": {
-                name: fileSha256(metaDataDir / name) for name in trackedNames
-            }
-        }
-        markerPath.write_text(json.dumps(markerPayload, indent=2) + "\n", encoding="utf-8")
-        unchangedDefaults.extend(trackedNames)
-    if unchangedDefaults:
-        raise RuntimeError(
-            "Project metadata still contains generated default content. Replace/customize these "
-            f"files before building: {', '.join(sorted(set(unchangedDefaults)))}"
-        )
 
 
 def copyProjectMetaData(metaDataDir: Path, targetProjectDir: Path) -> None:
@@ -720,9 +689,9 @@ def collectAndCopyArtifacts(
             logLines.append(f"Using ldscript source: {envLdscriptSource}")
 
     fsCandidates = [
-        ("spiffs.bin", "spiffs.bin"),
-        ("littlefs.bin", "LittleFS.bin"),
-        ("LittleFS.bin", "LittleFS.bin"),
+        ("spiffs.bin", "storage.bin"),
+        ("littlefs.bin", "storage.bin"),
+        ("LittleFS.bin", "storage.bin"),
     ]
     for sourceName, destName in fsCandidates:
         if copyIfExists(buildDir / sourceName, targetVersionDir / destName):
@@ -801,7 +770,6 @@ def syncProjectToAws(
     rsyncCmd = [
         rsyncPath,
         "-avz",
-        "--update",
         "-e",
         sshRsyncTransport,
         "--exclude",
@@ -876,7 +844,6 @@ def syncProjectsFolderToAws(
     rsyncCmd = [
         rsyncPath,
         "-avz",
-        "--update",
         "-e",
         sshRsyncTransport,
         "--exclude",
@@ -957,14 +924,15 @@ def validateProjectsFolderForAwsSync(projectsRoot: Path) -> None:
 
 
 def detectBuildSystem(projectPath: Path) -> str:
-    """Detect the project type without changing the legacy PlatformIO path."""
     if (projectPath / "platformio.ini").is_file():
         return "platformio"
+
     cmakeFile = projectPath / "CMakeLists.txt"
     if cmakeFile.is_file():
         cmakeText = cmakeFile.read_text(encoding="utf-8", errors="ignore")
         if "project.cmake" in cmakeText or (projectPath / "sdkconfig").is_file():
             return "esp-idf"
+
     raise RuntimeError(
         "Build system not recognized: expected platformio.ini or an ESP-IDF CMakeLists.txt"
     )
@@ -1000,38 +968,86 @@ def detectEspIdfTarget(buildDir: Path, flasherArgs: dict) -> str:
                 return sanitizePathSegment(target)
         except (OSError, json.JSONDecodeError):
             pass
+
     chip = flasherArgs.get("extra_esptool_args", {}).get("chip")
     if isinstance(chip, str) and chip.strip():
         return sanitizePathSegment(chip)
+
     return "esp32"
 
 
 def findEspIdfPartitionsCsv(projectPath: Path, buildDir: Path) -> Path | None:
     candidates = [
         buildDir / "partition_table" / "partition-table.csv",
-        projectPath / "partitions.csv",
     ]
+
+    #-- Custom partition tables (e.g. "partitions/radio_4mb.csv") are declared in sdkconfig
+    sdkconfigPath = projectPath / "sdkconfig"
+    if sdkconfigPath.is_file():
+        sdkconfigText = sdkconfigPath.read_text(encoding="utf-8", errors="ignore")
+        filenameMatch = partitionTableFilenamePattern.search(sdkconfigText)
+        if filenameMatch:
+            candidates.append(projectPath / filenameMatch.group(1))
+
+    candidates.append(projectPath / "partitions.csv")
+
     for candidate in candidates:
         if candidate.is_file():
             return candidate
+
     generated = sorted((buildDir / "partition_table").glob("*.csv"))
     return generated[0] if generated else None
 
 
-def classifyEspIdfFlashFile(source: Path) -> str:
-    normalized = source.as_posix().lower()
-    name = source.name.lower()
-    if "bootloader" in normalized:
+def classifyEspIdfFlashFile(
+    partitionKey: str,
+    source: Path,
+    partitions: dict[str, dict[str, str]] | None = None,
+) -> str:
+    normalizedKey = partitionKey.strip().lower()
+    if normalizedKey == "bootloader":
         return "bootloader.bin"
-    if "partition" in normalized and name.endswith(".bin"):
+    if normalizedKey in {"partition-table", "partition_table"}:
+        return "partitions.bin"
+    if normalizedKey == "app":
+        return "firmware.bin"
+
+    #-- ESP-IDF names filesystem images after the partition (e.g. "storage"), not the fs type
+    partitionEntry = (partitions or {}).get(partitionKey) or (partitions or {}).get(normalizedKey)
+    subtype = (partitionEntry.get("subtype") or "").strip().lower() if partitionEntry else ""
+    if subtype in {"littlefs", "spiffs", "fatfs"}:
+        return "storage.bin"
+
+    name = source.name.lower()
+    if "bootloader" in name:
+        return "bootloader.bin"
+    if "partition" in name and name.endswith(".bin"):
         return "partitions.bin"
     if "boot_app0" in name:
         return "boot_app0.bin"
-    if "ota_data" in normalized or "phy_init" in normalized:
+    if "ota_data" in name or "phy_init" in name:
         return source.name
     if any(token in name for token in ("littlefs", "spiffs", "fatfs")):
-        return "LittleFS.bin" if "littlefs" in name else name
-    return "firmware.bin"
+        return "storage.bin"
+
+    return source.name
+
+
+def buildOffsetToPartitionNameMap(flasherArgs: dict) -> dict[str, str]:
+    #-- flasher_args.json also carries per-partition entries keyed by partition name
+    #-- (e.g. "bootloader", "partition-table", "app", plus any custom data partition
+    #-- name such as "storage"), each with its own "offset"/"file" — that name is the
+    #-- authoritative way to classify a flash file, since the data partition's name
+    #-- and its build artifact's filename both vary per project.
+    reservedKeys = {"write_flash_args", "flash_settings", "extra_esptool_args", "flash_files"}
+    offsetToName: dict[str, str] = {}
+    for key, value in flasherArgs.items():
+        if key in reservedKeys or not isinstance(value, dict):
+            continue
+        offsetValue = value.get("offset")
+        if isinstance(offsetValue, str) and offsetValue:
+            offsetToName[offsetValue] = key
+    return offsetToName
 
 
 def findEspIdfExportScript() -> Path | None:
@@ -1043,14 +1059,16 @@ def findEspIdfExportScript() -> Path | None:
         (Path.home() / ".espressif").glob("*/esp-idf/export.sh"), reverse=True
     ))
     candidates.append(Path.home() / "esp" / "esp-idf" / "export.sh")
+
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
+
     return None
 
 
 def runEspIdfCommand(cmdArgs: list[str], cwd: Path, logLines: list[str]) -> None:
-    """Run idf.py directly or bootstrap its environment in a child shell."""
+    #-- Run idf.py directly or bootstrap its environment via export.sh in a child shell
     idfExecutable = shutil.which("idf.py")
     if idfExecutable and os.environ.get("IDF_PATH"):
         runCommand([idfExecutable] + cmdArgs, cwd, logLines)
@@ -1071,7 +1089,6 @@ def runEspIdfCommand(cmdArgs: list[str], cwd: Path, logLines: list[str]) -> None
 
 
 def addOptionalEspIdfFilesystem(
-    projectPath: Path,
     buildDir: Path,
     targetVersionDir: Path,
     partitions: dict[str, dict[str, str]],
@@ -1080,17 +1097,23 @@ def addOptionalEspIdfFilesystem(
     logLines: list[str],
 ) -> None:
     candidates: list[Path] = []
-    for pattern in ("*littlefs*.bin", "*spiffs*.bin", "*fatfs*.bin"):
+    for pattern in ("*littlefs*.bin", "*spiffs*.bin", "*fatfs*.bin", "*storage*.bin"):
         candidates.extend(sorted(buildDir.rglob(pattern)))
+
     for source in candidates:
         resolved = source.resolve()
         if resolved in copiedSources or not source.is_file():
             continue
+
         offset = detectFilesystemOffset(partitions)
         if not offset:
             logLines.append(f"WARN: filesystem image found but no partition offset: {source}")
             return
-        destinationName = classifyEspIdfFlashFile(source)
+
+        partitionName = next(
+            (name for name, entry in partitions.items() if entry.get("offset") == offset), ""
+        )
+        destinationName = classifyEspIdfFlashFile(partitionName, source, partitions)
         shutil.copy2(source, targetVersionDir / destinationName)
         flashFiles.append({"offset": offset, "file": destinationName})
         logLines.append(f"Optional filesystem included: {source}")
@@ -1113,7 +1136,9 @@ def buildEspIdfProject(projectPath: Path, targetProjectDir: Path, version: str) 
         logLines.append("Cached Python path mismatch detected; running idf.py fullclean")
         runEspIdfCommand(["fullclean"], projectPath, logLines)
         runEspIdfCommand(["build"], projectPath, logLines)
+
     flasherArgs = loadEspIdfFlasherArgs(buildDir)
+    offsetToPartitionName = buildOffsetToPartitionNameMap(flasherArgs)
     boardName = detectEspIdfTarget(buildDir, flasherArgs)
     targetVersionDir = targetProjectDir / boardName / version
     targetVersionDir.mkdir(parents=True, exist_ok=True)
@@ -1127,22 +1152,34 @@ def buildEspIdfProject(projectPath: Path, targetProjectDir: Path, version: str) 
     flashFiles: list[dict[str, str]] = []
     copiedSources: set[Path] = set()
     usedNames: set[str] = set()
-    for offset, fileValue in flasherArgs["flash_files"].items():
+    firmwareOffset = detectFirmwareOffset(partitions, "esp32").lower()
+    flashManifest = flasherArgs["flash_files"]
+    for rawOffset, fileValue in flashManifest.items():
         source = resolveEspIdfBuildFile(buildDir, str(fileValue))
         if not source.is_file():
             raise RuntimeError(f"ESP-IDF flash file does not exist: {source}")
-        destinationName = classifyEspIdfFlashFile(source)
+
+        offset = str(rawOffset)
+        partitionName = offsetToPartitionName.get(offset)
+        if partitionName:
+            destinationName = classifyEspIdfFlashFile(partitionName, source, partitions)
+        elif offset.lower() == firmwareOffset:
+            destinationName = "firmware.bin"
+        else:
+            destinationName = classifyEspIdfFlashFile("", source, partitions)
         if destinationName in usedNames:
             destinationName = source.name
         shutil.copy2(source, targetVersionDir / destinationName)
-        flashFiles.append({"offset": str(offset), "file": destinationName})
-        copiedSources.add(source)
+        flashFiles.append({"offset": offset, "file": destinationName})
+        copiedSources.add(source.resolve())
         usedNames.add(destinationName)
 
     addOptionalEspIdfFilesystem(
-        projectPath, buildDir, targetVersionDir, partitions, flashFiles,
-        copiedSources, logLines,
+        buildDir, targetVersionDir, partitions, flashFiles, copiedSources, logLines,
     )
+
+    flashFiles.sort(key=lambda item: int(str(item["offset"]), 0))
+
     flashPayload = {
         "board": boardName,
         "soc": boardName,
@@ -1152,6 +1189,7 @@ def buildEspIdfProject(projectPath: Path, targetProjectDir: Path, version: str) 
     (targetVersionDir / "flash.json").write_text(
         json.dumps(flashPayload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+
     now = dt.datetime.now().isoformat(timespec="seconds")
     logBody = ["# Build log for ESP-IDF", "", f"Generated: {now}", ""] + logLines
     logBody.extend(["", f"Source manifest: {buildDir / 'flasher_args.json'}", ""])
@@ -1160,24 +1198,20 @@ def buildEspIdfProject(projectPath: Path, targetProjectDir: Path, version: str) 
 
 
 def buildPlatformioProject(projectPath: Path, targetProjectDir: Path, version: str) -> None:
-    """Original PlatformIO build and artifact collection flow."""
     if shutil.which("pio") is None:
         raise RuntimeError(
             "PlatformIO CLI not found. Install PlatformIO Core and ensure 'pio' is in PATH."
         )
+
     platformioIni = projectPath / "platformio.ini"
     workspaceDir = getWorkspaceDir(platformioIni, projectPath)
     platformioSections = parsePlatformioSections(platformioIni)
-    parsedEnvs = parseEnvs(platformioIni)
-    if not parsedEnvs:
-        raise RuntimeError("No [env:...] sections found in platformio.ini")
-    skippedEnvs = [env for env in parsedEnvs if shouldSkipEnv(env)]
-    envs = [env for env in parsedEnvs if not shouldSkipEnv(env)]
+    envNotes = parseEnvNotes(platformioIni)
+
+    envs = parseEnvs(platformioIni)
     if not envs:
-        raise RuntimeError(
-            "All environments were skipped because their names contain 'skip'. "
-            "Rename at least one [env:...] section to continue."
-        )
+        raise RuntimeError("No [env:...] sections found in platformio.ini")
+
     envBoardMap: dict[str, str] = {}
     envSocMap: dict[str, str] = {}
     boardCounts: dict[str, int] = {}
@@ -1188,37 +1222,60 @@ def buildPlatformioProject(projectPath: Path, targetProjectDir: Path, version: s
         envBoardMap[env] = boardName
         envSocMap[env] = socFamily
         boardCounts[boardName] = boardCounts.get(boardName, 0) + 1
+
     print(f"Environments: {', '.join(envs)}")
-    if skippedEnvs:
-        print(f"Skipped environments (name contains 'skip'): {', '.join(skippedEnvs)}")
     print("Boards per environment:")
     for env in envs:
         print(f"  - {env} -> {envBoardMap[env]} ({envSocMap[env]})")
     print(f"Workspace dir: {workspaceDir}")
+
     for env in envs:
         boardName = envBoardMap[env]
         socFamily = envSocMap[env]
-        if boardCounts[boardName] > 1:
-            envVersionDir = targetProjectDir / env / boardName / version
-        else:
-            envVersionDir = targetProjectDir / boardName / version
+
+        envDirName = sanitizePathSegment(env)
+        envDir = targetProjectDir / envDirName
+        envDir.mkdir(parents=True, exist_ok=True)
+        envNote = (envNotes.get(env) or "").strip()
+        if envNote:
+            (envDir / "type_note.txt").write_text(envNote + "\n", encoding="utf-8")
+
+        envVersionDir = envDir / boardName / version
         envVersionDir.mkdir(parents=True, exist_ok=True)
+
         logLines: list[str] = []
         runCommand(["pio", "run", "-e", env], projectPath, logLines)
+
         if (projectPath / "data").is_dir():
             try:
                 runCommand(["pio", "run", "-e", env, "-t", "buildfs"], projectPath, logLines)
             except RuntimeError as exc:
-                logLines.append(f"WARN: buildfs failed for {env}: {exc}")
+                logLines.append(f"WARN: buildfs niet gelukt voor {env}: {exc}")
+
         envPartitionsSource = resolveEnvPartitionsSource(
-            projectPath, platformioSections, env, socFamily,
+            projectPath,
+            platformioSections,
+            env,
+            socFamily,
         )
         envLdscriptSource = resolveEnvLdscriptSource(
-            projectPath, platformioSections, env, socFamily,
+            projectPath,
+            platformioSections,
+            env,
+            socFamily,
         )
+
         collectAndCopyArtifacts(
-            projectPath, workspaceDir, env, boardName, socFamily,
-            envVersionDir, envPartitionsSource, envLdscriptSource, version, logLines,
+            projectPath,
+            workspaceDir,
+            env,
+            boardName,
+            socFamily,
+            envVersionDir,
+            envPartitionsSource,
+            envLdscriptSource,
+            version,
+            logLines,
         )
         print(f"Completed for env '{env}': {envVersionDir}")
 
@@ -1268,16 +1325,15 @@ def main() -> int:
     projectsRoot = outputRoot / "projects"
 
     if args.only_sync_aws:
-        privateConfig = loadPrivateConfig(["aws_server", "aws_target", "aws_ssh_key"])
-        awsSshKey = Path(privateConfig["aws_ssh_key"]).expanduser().resolve()
+        awsSshKey = Path(defaultAwsSshKey).expanduser().resolve()
         if not awsSshKey.exists():
             raise SystemExit(f"SSH key not found: {awsSshKey}")
         print(f"Validating projects directory: {projectsRoot}")
         validateProjectsFolderForAwsSync(projectsRoot)
         syncProjectsFolderToAws(
             projectsRoot=projectsRoot,
-            awsServer=privateConfig["aws_server"],
-            awsTarget=privateConfig["aws_target"],
+            awsServer=defaultAwsServer,
+            awsTarget=defaultAwsTarget,
             awsSshKey=awsSshKey,
             awsDryRun=args.aws_dry_run,
         )
@@ -1286,11 +1342,9 @@ def main() -> int:
 
     os.chdir(projectPath)
     buildSystem = detectBuildSystem(projectPath)
+
     version = detectVersion(projectPath)
     projectName = projectPath.name
-
-    projectMetaDataDir = ensureProjectMetaDataDefaults(projectPath)
-    validateProjectMetaData(projectMetaDataDir)
 
     targetProjectDir = projectsRoot / projectName
     if targetProjectDir.exists():
@@ -1298,6 +1352,7 @@ def main() -> int:
         shutil.rmtree(targetProjectDir)
     targetProjectDir.mkdir(parents=True, exist_ok=True)
 
+    projectMetaDataDir = ensureProjectMetaDataDefaults(projectPath)
     copyProjectMetaData(projectMetaDataDir, targetProjectDir)
 
     print(f"createProjectStructure.py {scriptVersion}")
@@ -1305,21 +1360,21 @@ def main() -> int:
     print(f"Build system: {buildSystem}")
     print(f"Version: {version}")
     print(f"Output: {targetProjectDir}")
+
     if buildSystem == "platformio":
         buildPlatformioProject(projectPath, targetProjectDir, version)
     else:
         buildEspIdfProject(projectPath, targetProjectDir, version)
 
     if args.sync_aws:
-        privateConfig = loadPrivateConfig(["aws_server", "aws_target", "aws_ssh_key"])
-        awsSshKey = Path(privateConfig["aws_ssh_key"]).expanduser().resolve()
+        awsSshKey = Path(defaultAwsSshKey).expanduser().resolve()
         if not awsSshKey.exists():
             raise SystemExit(f"SSH key not found: {awsSshKey}")
         syncProjectToAws(
             projectsRoot=projectsRoot,
             projectName=projectName,
-            awsServer=privateConfig["aws_server"],
-            awsTarget=privateConfig["aws_target"],
+            awsServer=defaultAwsServer,
+            awsTarget=defaultAwsTarget,
             awsSshKey=awsSshKey,
             awsDryRun=args.aws_dry_run,
         )
@@ -1333,6 +1388,4 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except KeyboardInterrupt:
         raise SystemExit("Aborted by user.")
-    except RuntimeError as exc:
-        raise SystemExit(f"ERROR: {exc}")
     

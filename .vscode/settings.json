@@ -2,7 +2,7 @@
   "idf.adapterTargetName": "esp32s3",
   "idf.flashType": "UART",
   "idf.currentSetup": "/Users/willema/.espressif/v6.0.2/esp-idf",
-  "idf.port": "/dev/tty.usbmodem21101",
+  "idf.port": "/dev/tty.usbmodem202401",
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
   ],

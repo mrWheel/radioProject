@@ -2,6 +2,11 @@
   "version": 1,
   "stations": [
     {
+      "name": "Jazz24",
+      "url": "https://knkx-live-a.edge.audiocdn.com/6285_128k",
+      "codec": "mp3"
+    },
+    {
       "name": "Radio Swiss Jazz",
       "url": "http://distribution.srg-ssr.ch/m/rsj/mp3_128",
       "codec": "mp3"
@@ -12,6 +17,55 @@
       "codec": "mp3"
     },
     {
+      "name": "WDCB Jazz",
+      "url": "https://wdcb-ice.streamguys1.com/wdcb128",
+      "codec": "mp3"
+    },
+    {
+      "name": "WWOZ New Orleans",
+      "url": "https://wwoz-sc.streamguys1.com/wwoz-hi.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "KCSM Jazz 91",
+      "url": "http://ice7.securenetsystems.net/KCSM2",
+      "codec": "mp3"
+    },
+    {
+      "name": "Jazz London Radio",
+      "url": "https://radio.canstream.co.uk:8075/live.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "113.FM Bluesville",
+      "url": "https://113fm-atunwadigital.streamguys1.com/1005",
+      "codec": "mp3"
+    },
+    {
+      "name": "113.FM Jazzy",
+      "url": "https://113fm-atunwadigital.streamguys1.com/1067",
+      "codec": "mp3"
+    },
+    {
+      "name": "Aardvark Blues FM",
+      "url": "https://streaming.live365.com/b77280_128mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "181.FM True Blues",
+      "url": "https://listen.181fm.com/181-blues_128k.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "181.FM BeBop Jazz",
+      "url": "https://listen.181fm.com/181-bebop_128k.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "181.FM Vocal Jazz",
+      "url": "https://listen.181fm.com/181-vocals_128k.mp3",
+      "codec": "mp3"
+    },   {
       "name": "Secret Agent SomaFM",
       "url": "https://ice2.somafm.com/secretagent-128-mp3",
       "codec": "mp3"
@@ -44,11 +98,6 @@
     {
       "name": "NPO 3FM",
       "url": "https://icecast.omroep.nl/3fm-bb-mp3",
-      "codec": "mp3"
-    },
-    {
-      "name": "Jazz24",
-      "url": "https://knkx-live-a.edge.audiocdn.com/6285_128k",
       "codec": "mp3"
     },
     {
@@ -129,56 +178,6 @@
     {
       "name": "JOE",
       "url": "https://stream.joe.nl/joe/mp3",
-      "codec": "mp3"
-    },
-    {
-      "name": "WDCB Jazz",
-      "url": "https://wdcb-ice.streamguys1.com/wdcb128",
-      "codec": "mp3"
-    },
-    {
-      "name": "WWOZ New Orleans",
-      "url": "https://wwoz-sc.streamguys1.com/wwoz-hi.mp3",
-      "codec": "mp3"
-    },
-    {
-      "name": "KCSM Jazz 91",
-      "url": "http://ice7.securenetsystems.net/KCSM2",
-      "codec": "mp3"
-    },
-    {
-      "name": "Jazz London Radio",
-      "url": "https://radio.canstream.co.uk:8075/live.mp3",
-      "codec": "mp3"
-    },
-    {
-      "name": "113.FM Bluesville",
-      "url": "https://113fm-atunwadigital.streamguys1.com/1005",
-      "codec": "mp3"
-    },
-    {
-      "name": "113.FM Jazzy",
-      "url": "https://113fm-atunwadigital.streamguys1.com/1067",
-      "codec": "mp3"
-    },
-    {
-      "name": "Aardvark Blues FM",
-      "url": "https://streaming.live365.com/b77280_128mp3",
-      "codec": "mp3"
-    },
-    {
-      "name": "181.FM True Blues",
-      "url": "https://listen.181fm.com/181-blues_128k.mp3",
-      "codec": "mp3"
-    },
-    {
-      "name": "181.FM BeBop Jazz",
-      "url": "https://listen.181fm.com/181-bebop_128k.mp3",
-      "codec": "mp3"
-    },
-    {
-      "name": "181.FM Vocal Jazz",
-      "url": "https://listen.181fm.com/181-vocals_128k.mp3",
       "codec": "mp3"
     }
   ]
