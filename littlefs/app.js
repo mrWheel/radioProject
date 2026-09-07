@@ -5,11 +5,15 @@ let manageMode = 'view';
 let pendingButtons = [];
 //-- Browser audio is purely local to this browser tab: the radio device
 //-- keeps playing via its own PCM/I2S path regardless, and this tab's own
-//-- direct stream of the current station only runs while the "Muziek via
-//-- browser" switch is On.
+//-- direct stream of the current station only runs while the "Browser
+//-- Audio" switch is On.
+//-- While the switch is On, the volume slider controls only this tab's own
+//-- browserVolume (never sent to the device); while Off, the slider goes
+//-- back to controlling/reflecting the device's volume as before.
 let browserAudio = null;
 let browserAudioOn = false;
 let browserAudioUrl = null;
+let browserVolume = 100;
 
 function markPressed(btn) { if (!btn) return; btn.classList.remove('done'); btn.classList.add('pressed'); pendingButtons.push(btn); }
 function resolvePending() { pendingButtons.forEach((btn) => { btn.classList.remove('pressed'); btn.classList.add('done'); setTimeout(() => btn.classList.remove('done'), 400); }); pendingButtons = []; }
@@ -136,19 +140,26 @@ function setBrowserAudio(on) {
   browserAudioOn = !!on;
   const toggle = document.getElementById('browserAudioToggle');
   const label = document.getElementById('browserAudioValue');
+  const slider = document.getElementById('volumeSlider');
+  const volLabel = document.getElementById('volumeValue');
   if (toggle) toggle.checked = browserAudioOn;
   if (label) label.textContent = browserAudioOn ? 'On' : 'Off';
   stopBrowserAudio();
   browserAudioUrl = null;
   if (browserAudioOn) {
+    slider.value = String(browserVolume);
+    volLabel.textContent = browserVolume + '%';
     const url = state.station && state.station.url ? state.station.url : null;
     if (!url) { setStatus('No stream URL for this station'); return; }
     browserAudioUrl = url;
     browserAudio = new Audio(url);
     browserAudio.preload = 'auto';
     browserAudio.autoplay = true;
-    browserAudio.volume = 1.0;
+    browserAudio.volume = browserVolume / 100;
     browserAudio.play().catch(() => setStatus('Browser audio requires a user gesture'));
+  } else {
+    slider.value = String(state.volume);
+    volLabel.textContent = state.volume + '%';
   }
 }
 
@@ -171,9 +182,14 @@ function applyState(data) {
   if (line2El.textContent !== state.line2) line2El.textContent = state.line2;
   const line3El = document.getElementById('line3');
   if (line3El.textContent !== state.line3) line3El.textContent = state.line3;
-  const slider = document.getElementById('volumeSlider');
-  slider.value = String(state.volume);
-  document.getElementById('volumeValue').textContent = state.volume + '%';
+  //-- While Browser Audio is On, the slider reflects/controls only this
+  //-- tab's local browserVolume (set in setBrowserAudio()); the device's
+  //-- volume broadcast must not overwrite it.
+  if (!browserAudioOn) {
+    const slider = document.getElementById('volumeSlider');
+    slider.value = String(state.volume);
+    document.getElementById('volumeValue').textContent = state.volume + '%';
+  }
   //-- Follow station changes while this browser's audio is On (e.g. switched
   //-- from the EC11); title/volume-only state updates must NOT restart the
   //-- browser stream, so only re-point the <audio> element on a URL change.
@@ -265,10 +281,18 @@ document.getElementById('stationsFileInput').addEventListener('change', async (e
     setStatus('Import failed');
   }
 });
+//-- While Browser Audio is On, the slider drives only this tab's local
+//-- browserVolume/browserAudio.volume, never the device (no WS command
+//-- sent); while Off, it controls the device's volume as before.
 document.getElementById('volumeSlider').addEventListener('input', (event) => {
   const value = Number(event.target.value);
   document.getElementById('volumeValue').textContent = value + '%';
-  send('volumeSet', { value });
+  if (browserAudioOn) {
+    browserVolume = value;
+    if (browserAudio) browserAudio.volume = value / 100;
+  } else {
+    send('volumeSet', { value });
+  }
 });
 //-- No server round-trip: the switch only starts/stops this tab's own
 //-- stream; the radio device itself keeps playing either way.
