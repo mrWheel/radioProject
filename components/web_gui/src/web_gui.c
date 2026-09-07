@@ -214,6 +214,22 @@ static void web_gui_apply_command(const char* type, const char* name, const char
     cJSON_ReplaceItemInObject(root, "type", cJSON_CreateString("state"));
     web_gui_fill_state(response_data);
   }
+  else if (strcmp(type, "stationSelect") == 0)
+  {
+    size_t count = station_store_count();
+    if (count > 0 && value >= 0 && (size_t)value < count)
+    {
+      s_current_station_index = (size_t)value;
+      const radio_station_t* station = station_store_get(s_current_station_index);
+      if (station)
+      {
+        radio_audio_play(station);
+        radio_settings_save(s_current_station_index);
+      }
+    }
+    cJSON_ReplaceItemInObject(root, "type", cJSON_CreateString("state"));
+    web_gui_fill_state(response_data);
+  }
   else if (strcmp(type, "play") == 0)
   {
     radio_audio_set_paused(false);
@@ -772,9 +788,42 @@ static esp_err_t ws_handler(httpd_req_t* req)
     return err;
   }
 
-  static const char* k_queued_types[] = {"stationPrevious", "stationNext",  "play",
-                                         "pause",           "volumeSet",    "stationAdd",
-                                         "stationEdit",     "stationDelete"};
+  //-- Read-only, same as getState: answered directly to the requester instead
+  //-- of going through the command queue/broadcast, since station_store_get()
+  //-- is a plain in-memory array lookup (RADIO_MAX_STATIONS = 32) and never
+  //-- blocks. Powers the "Select Station" popup's scrollable list.
+  if (strcmp(type, "getStations") == 0)
+  {
+    cJSON* root = cJSON_CreateObject();
+    cJSON* response_data = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "stations");
+    cJSON_AddItemToObject(root, "data", response_data);
+    size_t count = station_store_count();
+    cJSON_AddNumberToObject(response_data, "current",
+                            (double)web_gui_station_index(s_current_station_index));
+    cJSON* list = cJSON_CreateArray();
+    for (size_t i = 0; i < count; ++i)
+    {
+      const radio_station_t* station = station_store_get(i);
+      if (!station)
+      {
+        continue;
+      }
+      cJSON* item = cJSON_CreateObject();
+      cJSON_AddNumberToObject(item, "index", (double)i);
+      cJSON_AddStringToObject(item, "name", station->name);
+      cJSON_AddItemToArray(list, item);
+    }
+    cJSON_AddItemToObject(response_data, "stations", list);
+    esp_err_t err = web_gui_ws_send_json(req, root);
+    cJSON_Delete(root);
+    cJSON_Delete(msg);
+    return err;
+  }
+
+  static const char* k_queued_types[] = {
+      "stationPrevious", "stationNext", "stationSelect", "play",         "pause",
+      "volumeSet",       "stationAdd",  "stationEdit",   "stationDelete"};
   bool known = false;
   for (size_t i = 0; i < sizeof(k_queued_types) / sizeof(k_queued_types[0]); ++i)
   {

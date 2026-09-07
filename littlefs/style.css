@@ -42,4 +42,8 @@ input:disabled, select:disabled { opacity:.6; background:rgba(0,0,0,0.03); }
 .modal-actions { display:flex; justify-content:flex-end; gap:12px; margin-top:16px; flex-wrap:wrap; }
 .modal-file-actions { display:flex; justify-content:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
 .modal-close-row { display:flex; justify-content:flex-end; margin-top:8px; }
+.station-list { display:flex; flex-direction:column; gap:8px; max-height:340px; overflow-y:auto; padding-right:4px; }
+.station-list-item { width:100%; text-align:left; }
+.station-list-item.active { background:linear-gradient(180deg, rgba(47,128,237,0.12), rgba(47,128,237,0.04)); border-color:rgba(47,128,237,0.3); font-weight:600; }
+.station-list-empty { text-align:center; color:var(--muted); padding:20px 0; }
 @media (max-width:560px) { body { padding:12px; } .content { padding:16px; } .nav-row, .modal-actions, .modal-file-actions, .slider-row { flex-direction:column; } .modal-actions button, .modal-file-actions button { width:100%; } }

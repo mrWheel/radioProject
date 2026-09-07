@@ -104,6 +104,8 @@ function connectWs() {
         setStatus(msg.data && msg.data.message ? msg.data.message : 'Error');
       } else if (msg.type === 'bufferFill') {
         if (msg.data) setBufferFill(msg.data.bufferFill);
+      } else if (msg.type === 'stations') {
+        renderStationList(msg.data);
       } else if (msg.data) {
         applyState(msg.data);
       }
@@ -216,6 +218,35 @@ function setManageFieldsEnabled(enabled) {
   document.getElementById('stationCodecInput').disabled = !enabled;
 }
 
+//-- Builds the scrollable station list shown in the "Select Station" popup
+//-- from the {current, stations:[{index,name}]} payload of a "stations"
+//-- message, highlighting the currently playing station. Clicking an entry
+//-- sends stationSelect and closes the popup.
+function renderStationList(data) {
+  const container = document.getElementById('stationListContainer');
+  container.innerHTML = '';
+  const stations = (data && Array.isArray(data.stations)) ? data.stations : [];
+  const current = data ? Number(data.current ?? -1) : -1;
+  if (stations.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'station-list-empty';
+    empty.textContent = 'No stations available';
+    container.appendChild(empty);
+    return;
+  }
+  stations.forEach((station) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'station-list-item' + (station.index === current ? ' active' : '');
+    item.textContent = station.name;
+    item.addEventListener('click', () => {
+      send('stationSelect', { value: station.index });
+      document.getElementById('selectStationModal').classList.remove('open');
+    });
+    container.appendChild(item);
+  });
+}
+
 function setManageMode(mode) {
   manageMode = mode;
   const editing = mode !== 'view';
@@ -225,8 +256,13 @@ function setManageMode(mode) {
   document.getElementById('stationModalTitle').textContent = mode === 'new' ? 'New Station' : mode === 'edit' ? 'Edit Station' : 'Manage Stations';
 }
 
-document.getElementById('prevBtn').addEventListener('click', (e) => send('stationPrevious', null, e.currentTarget));
-document.getElementById('nextBtn').addEventListener('click', (e) => send('stationNext', null, e.currentTarget));
+document.getElementById('selectStationBtn').addEventListener('click', (e) => {
+  markPressed(e.currentTarget);
+  resolvePending();
+  send('getStations');
+  document.getElementById('selectStationModal').classList.add('open');
+});
+document.getElementById('closeSelectStationBtn').addEventListener('click', () => document.getElementById('selectStationModal').classList.remove('open'));
 document.getElementById('playBtn').addEventListener('click', (e) => send('play', null, e.currentTarget));
 document.getElementById('pauseBtn').addEventListener('click', (e) => send('pause', null, e.currentTarget));
 document.getElementById('manageBtn').addEventListener('click', (e) => { markPressed(e.currentTarget); resolvePending(); fillManageFormFromCurrentStation(); setManageMode('view'); document.getElementById('stationModal').classList.add('open'); });
@@ -301,8 +337,8 @@ document.getElementById('browserAudioToggle').addEventListener('change', (event)
 });
 document.addEventListener('keydown', (event) => {
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
-  if (event.key === 'ArrowUp') { event.preventDefault(); send('stationPrevious', null, document.getElementById('prevBtn')); }
-  if (event.key === 'ArrowDown') { event.preventDefault(); send('stationNext', null, document.getElementById('nextBtn')); }
+  if (event.key === 'ArrowUp') { event.preventDefault(); send('stationPrevious'); }
+  if (event.key === 'ArrowDown') { event.preventDefault(); send('stationNext'); }
 });
 document.getElementById('reconnectBtn').addEventListener('click', () => {
   connectionHalted = false;

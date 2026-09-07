@@ -22,10 +22,9 @@
       </div>
       <div class="controls">
         <div class="nav-row">
-          <button id="prevBtn" class="control-btn" type="button">◀ Previous</button>
+          <button id="selectStationBtn" class="control-btn" type="button">Select Station</button>
           <button id="playBtn" class="control-btn" type="button">▶ Play</button>
           <button id="pauseBtn" class="control-btn" type="button">❚❚ Pause</button>
-          <button id="nextBtn" class="control-btn" type="button">Next ▶</button>
         </div>
         <div class="slider-wrap">
           <div class="slider-row">
@@ -88,6 +87,15 @@
       </div>
       <div class="modal-close-row">
         <button id="closeStationBtn" class="control-btn" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+  <div id="selectStationModal" class="modal">
+    <div class="modal-card">
+      <h3>Select Station</h3>
+      <div id="stationListContainer" class="station-list"></div>
+      <div class="modal-close-row">
+        <button id="closeSelectStationBtn" class="control-btn" type="button">Cancel</button>
       </div>
     </div>
   </div>
