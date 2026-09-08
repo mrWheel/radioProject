@@ -4,10 +4,22 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define RADIO_BACKLIGHT_TIMEOUT_MS (5 * 60 * 1000)
+#define RADIO_BACKLIGHT_TIMEOUT_MS_DEFAULT (5 * 60 * 1000)
+#define RADIO_BACKLIGHT_TIMEOUT_MAX_MIN 60
 
 static radio_input_callback_t s_cb;
 static void* s_ctx;
+//-- 0 means "never dim"; set from the Settings menu (see radio_settings).
+static volatile uint32_t s_backlight_timeout_ms = RADIO_BACKLIGHT_TIMEOUT_MS_DEFAULT;
+
+void radio_input_set_backlight_timeout_minutes(int minutes)
+{
+  if (minutes < 0)
+    minutes = 0;
+  if (minutes > RADIO_BACKLIGHT_TIMEOUT_MAX_MIN)
+    minutes = RADIO_BACKLIGHT_TIMEOUT_MAX_MIN;
+  s_backlight_timeout_ms = minutes == 0 ? 0 : (uint32_t)minutes * 60 * 1000;
+}
 
 static void input_task(void* arg)
 {
@@ -43,15 +55,18 @@ static void input_task(void* arg)
       {
         s_cb(RADIO_INPUT_AUX_PUSH, s_ctx);
       }
-      else if (event.type == TFT_EC11_EVENT_AUX_BUTTON &&
-               (event.press == TFT_EC11_PRESS_MEDIUM || event.press == TFT_EC11_PRESS_LONG))
+      else if (event.type == TFT_EC11_EVENT_AUX_BUTTON && event.press == TFT_EC11_PRESS_MEDIUM)
+      {
+        s_cb(RADIO_INPUT_AUX_MEDIUM_PUSH, s_ctx);
+      }
+      else if (event.type == TFT_EC11_EVENT_AUX_BUTTON && event.press == TFT_EC11_PRESS_LONG)
       {
         s_cb(RADIO_INPUT_AUX_LONG_PUSH, s_ctx);
       }
     }
 
-    if (backlight_on &&
-        xTaskGetTickCount() - last_activity >= pdMS_TO_TICKS(RADIO_BACKLIGHT_TIMEOUT_MS))
+    if (backlight_on && s_backlight_timeout_ms != 0 &&
+        xTaskGetTickCount() - last_activity >= pdMS_TO_TICKS(s_backlight_timeout_ms))
     {
       tft_ec11_set_backlight(false);
       backlight_on = false;

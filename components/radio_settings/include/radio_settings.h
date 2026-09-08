@@ -1,5 +1,6 @@
 #pragma once
 #include <stddef.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 //-- Persists the last-used station index across reboots (NVS). Volume is
@@ -7,3 +8,23 @@
 esp_err_t radio_settings_init(void);
 esp_err_t radio_settings_load(size_t *station);
 esp_err_t radio_settings_save(size_t station);
+
+//-- [Settings] menu values, all persisted in the same NVS namespace as the
+//-- station index. A load call returning anything other than ESP_OK means
+//-- the value was never saved (fresh device) - callers apply their own
+//-- documented default in that case.
+
+//-- Hostname/AP-name numeric override: 0 = derive from the MAC address
+//-- ("Radio-xx-yy-zz", the pre-existing behavior), 1-256 = "Radio-<n>".
+esp_err_t radio_settings_load_hostname_num(uint16_t *value);
+esp_err_t radio_settings_save_hostname_num(uint16_t value);
+
+//-- Output attenuation percent applied on top of the 0-100 volume (1-100).
+//-- Default when not present in NVS: 50.
+esp_err_t radio_settings_load_attenuation(uint8_t *value);
+esp_err_t radio_settings_save_attenuation(uint8_t value);
+
+//-- Backlight auto-off timeout in minutes (0-60, 0 = never dim). Default
+//-- when not present in NVS: 5.
+esp_err_t radio_settings_load_backlight_minutes(uint8_t *value);
+esp_err_t radio_settings_save_backlight_minutes(uint8_t value);

@@ -27,7 +27,8 @@ typedef enum
   DISPLAY_MODE_TECHNICAL,
   DISPLAY_MODE_TITLE,
   DISPLAY_MODE_BUFFER_FILL,
-  DISPLAY_MODE_ERROR
+  DISPLAY_MODE_ERROR,
+  DISPLAY_MODE_SETTINGS
 } display_mode_t;
 
 typedef struct
@@ -46,6 +47,11 @@ typedef struct
   char mac[DISPLAY_TECH_VALUE_MAX];
   char hostname[DISPLAY_TECH_VALUE_MAX];
   size_t station_count;
+  size_t settings_selected;
+  bool settings_editing;
+  uint16_t settings_hostname_num;
+  uint8_t settings_attenuation;
+  uint8_t settings_backlight_minutes;
 } display_message_t;
 
 static QueueHandle_t s_queue;
@@ -482,6 +488,82 @@ static void draw_technical(const display_message_t* message)
   }
 }
 
+//-- [Settings] menu: 5 fixed rows (Hostname#, Attenuating, Backlight off
+//-- time, Reset Radio, Exit), always fully redrawn since updates are rare
+//-- (rotation/edit), unlike the windowed station list.
+#define SETTINGS_ITEM_COUNT 5
+static const char* k_settings_labels[SETTINGS_ITEM_COUNT] = {
+    "Hostname#", "Attenuating", "Backlight off", "Reset Radio", "Exit"};
+
+static void format_settings_value(size_t index, const display_message_t* message, char* out,
+                                  size_t out_len)
+{
+  switch (index)
+  {
+  case 0:
+    if (message->settings_hostname_num == 0)
+      snprintf(out, out_len, "auto");
+    else
+      snprintf(out, out_len, "%u", (unsigned)message->settings_hostname_num);
+    break;
+  case 1:
+    snprintf(out, out_len, "%u%%", (unsigned)message->settings_attenuation);
+    break;
+  case 2:
+    if (message->settings_backlight_minutes == 0)
+      snprintf(out, out_len, "never");
+    else
+      snprintf(out, out_len, "%um", (unsigned)message->settings_backlight_minutes);
+    break;
+  default:
+    out[0] = '\0';
+    break;
+  }
+}
+
+static void draw_settings(const display_message_t* message)
+{
+  uint16_t width = tft_ec11_width();
+  const int title_h = DISPLAY_HEADER_H;
+  const int row_h = 24;
+  const int scale = 2;
+  size_t slot_chars = (width - 8) / (6 * scale);
+
+  tft_ec11_set_background(TFT_EC11_BLACK);
+  tft_ec11_clear();
+  draw_header(width, "Settings", 2);
+
+  for (size_t i = 0; i < SETTINGS_ITEM_COUNT; i++)
+  {
+    bool selected = i == message->settings_selected;
+    int y = title_h + (int)i * row_h + 2;
+    char value[24];
+    char line[48];
+    format_settings_value(i, message, value, sizeof(value));
+    if (value[0])
+      snprintf(line, sizeof(line), "%s: %s", k_settings_labels[i], value);
+    else
+      snprintf(line, sizeof(line), "%s", k_settings_labels[i]);
+
+    uint16_t bg = selected ? TFT_EC11_WHITE : TFT_EC11_BLACK;
+    //-- Editing an active value (rows 0-2) is highlighted red-on-white so
+    //-- it's unmistakably different from just having it selected.
+    uint16_t fg = selected && message->settings_editing && i < 3
+                      ? TFT_EC11_RED
+                      : (selected ? TFT_EC11_BLACK : TFT_EC11_WHITE);
+
+    tft_ec11_fill_rect(0, y, width, row_h, bg);
+    tft_ec11_set_text_style(fg, scale);
+    size_t len = strlen(line);
+    if (len > slot_chars)
+      len = slot_chars;
+    tft_ec11_set_background(bg);
+    tft_ec11_draw_text(4, y + 2, len, line);
+  }
+
+  draw_hint("Turn:Scroll EN:Edit");
+}
+
 static void display_task(void* argument)
 {
   display_message_t message;
@@ -544,6 +626,10 @@ static void display_task(void* argument)
     case DISPLAY_MODE_TECHNICAL:
       s_current_mode = DISPLAY_MODE_TECHNICAL;
       draw_technical(&message);
+      break;
+    case DISPLAY_MODE_SETTINGS:
+      s_current_mode = DISPLAY_MODE_SETTINGS;
+      draw_settings(&message);
       break;
     case DISPLAY_MODE_BUFFER_FILL:
       //-- Only meaningful on the Volume screen where the bar lives;
@@ -643,6 +729,19 @@ void radio_display_technical(const char* ssid, const char* ip, const char* mac,
 void radio_display_buffer_fill(int percent)
 {
   display_message_t message = {.mode = DISPLAY_MODE_BUFFER_FILL, .buffer_fill = percent};
+  if (s_queue)
+    (void)xQueueSend(s_queue, &message, 0);
+}
+
+void radio_display_settings(size_t selected, bool editing, uint16_t hostname_num,
+                            uint8_t attenuation, uint8_t backlight_minutes)
+{
+  display_message_t message = {.mode = DISPLAY_MODE_SETTINGS,
+                               .settings_selected = selected,
+                               .settings_editing = editing,
+                               .settings_hostname_num = hostname_num,
+                               .settings_attenuation = attenuation,
+                               .settings_backlight_minutes = backlight_minutes};
   if (s_queue)
     (void)xQueueSend(s_queue, &message, 0);
 }

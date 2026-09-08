@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -19,18 +20,37 @@
 #include <string.h>
 
 //-- never remove this constant; it indicates the program version
-const char* PROG_VERSION = "v1.4.4";
+const char* PROG_VERSION = "v1.5.0";
 
 //-- How long the "Connected: SSID / IP" screen stays up before switching to
 //-- the Volume/PLAY screen, so the user can actually read it.
 #define WIFI_CONNECTED_SPLASH_MS 2500
 #define TECHNICAL_INFO_TIMEOUT_MS 30000
+//-- [Settings] menu: return to Volume after 120s without input, and the
+//-- bounds each editable item is clamped to (see radio_settings/radio_audio).
+#define SETTINGS_TIMEOUT_MS 120000
+#define SETTINGS_HOSTNAME_MAX 256
+#define SETTINGS_ATTEN_MIN 1
+#define SETTINGS_ATTEN_MAX 100
+#define SETTINGS_BACKLIGHT_MAX_MIN 60
+#define SETTINGS_ATTEN_DEFAULT 50
+#define SETTINGS_BACKLIGHT_DEFAULT_MIN 5
 typedef enum
 {
   UI_VOLUME,
   UI_STATION_SELECT,
-  UI_TECHNICAL
+  UI_TECHNICAL,
+  UI_SETTINGS
 } ui_mode_t;
+typedef enum
+{
+  SETTINGS_ITEM_HOSTNAME,
+  SETTINGS_ITEM_ATTENUATION,
+  SETTINGS_ITEM_BACKLIGHT,
+  SETTINGS_ITEM_RESET,
+  SETTINGS_ITEM_EXIT,
+  SETTINGS_ITEM_COUNT
+} settings_item_t;
 typedef struct
 {
   ui_mode_t mode;
@@ -39,9 +59,18 @@ typedef struct
   size_t selected;
   TickType_t last_rotation;
   TickType_t technical_started;
+  size_t settings_item;
+  bool settings_editing;
+  TickType_t settings_last_input;
+  uint16_t hostname_num;
+  uint8_t attenuation;
+  uint8_t backlight_minutes;
 } app_state_t;
 static QueueHandle_t s_events;
-static app_state_t s = {.mode = UI_VOLUME, .volume = CONFIG_RADIO_DEFAULT_VOLUME};
+static app_state_t s = {.mode = UI_VOLUME,
+                       .volume = CONFIG_RADIO_DEFAULT_VOLUME,
+                       .attenuation = SETTINGS_ATTEN_DEFAULT,
+                       .backlight_minutes = SETTINGS_BACKLIGHT_DEFAULT_MIN};
 //-- Filled once in app_main() from the last 3 MAC bytes; the AP SSID uses
 //-- colons, the mDNS hostname uses dashes since DNS labels can't hold colons.
 static char s_ap_ssid[32];
@@ -53,6 +82,18 @@ static void build_device_name(char* out, size_t out_len, char sep)
   uint8_t mac[6] = {0};
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
   snprintf(out, out_len, "Radio-%02X%c%02X%c%02X", mac[3], sep, mac[4], sep, mac[5]);
+}
+//-- Settings-menu "Hostname#" override: 0 keeps the MAC-derived name
+//-- ("Radio-xx-yy-zz"/"Radio-xx:xx:xx"), 1-256 forces "Radio-<n>" for both
+//-- the AP SSID and the mDNS hostname (no colon/dash distinction needed
+//-- since it's purely numeric).
+static void build_device_name_effective(char* out, size_t out_len, char sep,
+                                        uint16_t hostname_num)
+{
+  if (hostname_num > 0)
+    snprintf(out, out_len, "Radio-%u", (unsigned)hostname_num);
+  else
+    build_device_name(out, out_len, sep);
 }
 static void input_cb(radio_input_event_t e, void* ctx)
 {
@@ -255,6 +296,12 @@ static void show_volume(void)
   radio_display_volume(s.volume, st ? st->name : "");
 }
 
+static void show_settings(void)
+{
+  radio_display_settings(s.settings_item, s.settings_editing, s.hostname_num, s.attenuation,
+                         s.backlight_minutes);
+}
+
 static void show_technical(void)
 {
   wifi_ap_record_t ap_info;
@@ -348,11 +395,20 @@ static void ui_task(void* arg)
         ESP_LOGI("radio", "AUX short press");
         continue;
       }
-      if (e == RADIO_INPUT_AUX_LONG_PUSH)
+      if (e == RADIO_INPUT_AUX_MEDIUM_PUSH)
       {
         s.mode = UI_TECHNICAL;
         s.technical_started = xTaskGetTickCount();
         show_technical();
+        continue;
+      }
+      if (e == RADIO_INPUT_AUX_LONG_PUSH)
+      {
+        s.mode = UI_SETTINGS;
+        s.settings_item = SETTINGS_ITEM_HOSTNAME;
+        s.settings_editing = false;
+        s.settings_last_input = xTaskGetTickCount();
+        show_settings();
         continue;
       }
       if (e == RADIO_INPUT_EN_PUSH)
@@ -363,6 +419,46 @@ static void ui_task(void* arg)
           s.selected = s.playing;
           s.last_rotation = xTaskGetTickCount();
           radio_display_station_list(s.selected);
+        }
+        else if (s.mode == UI_SETTINGS)
+        {
+          s.settings_last_input = xTaskGetTickCount();
+          if (s.settings_item == SETTINGS_ITEM_EXIT)
+          {
+            s.mode = UI_VOLUME;
+            show_volume();
+          }
+          else if (s.settings_item == SETTINGS_ITEM_RESET)
+          {
+            ESP_LOGI("radio", "Settings: Reset Radio selected, rebooting");
+            esp_restart();
+          }
+          else if (s.settings_editing)
+          {
+            //-- Second short-press: lock the value in and persist it.
+            s.settings_editing = false;
+            switch (s.settings_item)
+            {
+            case SETTINGS_ITEM_HOSTNAME:
+              radio_settings_save_hostname_num(s.hostname_num);
+              break;
+            case SETTINGS_ITEM_ATTENUATION:
+              radio_settings_save_attenuation(s.attenuation);
+              break;
+            case SETTINGS_ITEM_BACKLIGHT:
+              radio_settings_save_backlight_minutes(s.backlight_minutes);
+              break;
+            default:
+              break;
+            }
+            show_settings();
+          }
+          else
+          {
+            //-- First short-press on an editable value: enter edit mode.
+            s.settings_editing = true;
+            show_settings();
+          }
         }
         else
         {
@@ -389,6 +485,60 @@ static void ui_task(void* arg)
           show_volume();
           web_gui_notify_device_state(s.playing);
         }
+        else if (s.mode == UI_SETTINGS)
+        {
+          s.settings_last_input = xTaskGetTickCount();
+          if (s.settings_editing)
+          {
+            switch (s.settings_item)
+            {
+            case SETTINGS_ITEM_HOSTNAME:
+            {
+              long next = (long)s.hostname_num + d;
+              if (next < 0)
+                next = 0;
+              if (next > SETTINGS_HOSTNAME_MAX)
+                next = SETTINGS_HOSTNAME_MAX;
+              s.hostname_num = (uint16_t)next;
+              break;
+            }
+            case SETTINGS_ITEM_ATTENUATION:
+            {
+              long next = (long)s.attenuation + d;
+              if (next < SETTINGS_ATTEN_MIN)
+                next = SETTINGS_ATTEN_MIN;
+              if (next > SETTINGS_ATTEN_MAX)
+                next = SETTINGS_ATTEN_MAX;
+              s.attenuation = (uint8_t)next;
+              radio_audio_set_attenuation(s.attenuation);
+              break;
+            }
+            case SETTINGS_ITEM_BACKLIGHT:
+            {
+              long next = (long)s.backlight_minutes + d;
+              if (next < 0)
+                next = 0;
+              if (next > SETTINGS_BACKLIGHT_MAX_MIN)
+                next = SETTINGS_BACKLIGHT_MAX_MIN;
+              s.backlight_minutes = (uint8_t)next;
+              radio_input_set_backlight_timeout_minutes(s.backlight_minutes);
+              break;
+            }
+            default:
+              break;
+            }
+          }
+          else
+          {
+            long next = (long)s.settings_item + d;
+            if (next < 0)
+              next = 0;
+            if (next >= (long)SETTINGS_ITEM_COUNT)
+              next = (long)SETTINGS_ITEM_COUNT - 1;
+            s.settings_item = (size_t)next;
+          }
+          show_settings();
+        }
         else if (count)
         {
           long next = (long)s.selected + d;
@@ -410,6 +560,12 @@ static void ui_task(void* arg)
     }
     if (s.mode == UI_TECHNICAL &&
         xTaskGetTickCount() - s.technical_started >= pdMS_TO_TICKS(TECHNICAL_INFO_TIMEOUT_MS))
+    {
+      s.mode = UI_VOLUME;
+      show_volume();
+    }
+    if (s.mode == UI_SETTINGS &&
+        xTaskGetTickCount() - s.settings_last_input >= pdMS_TO_TICKS(SETTINGS_TIMEOUT_MS))
     {
       s.mode = UI_VOLUME;
       show_volume();
@@ -446,6 +602,29 @@ void app_main(void)
   s_events = xQueueCreate(12, sizeof(radio_input_event_t));
   ESP_ERROR_CHECK(radio_input_start(input_cb, NULL));
 
+  //-- [Settings] menu values: read from NVS and fall back to their
+  //-- documented defaults when never saved before (fresh device) or out of
+  //-- bounds. Applied immediately so they take effect for the rest of boot
+  //-- (hostname/AP name, output attenuation, backlight timeout).
+  uint16_t hostname_num = 0;
+  if (radio_settings_load_hostname_num(&hostname_num) != ESP_OK ||
+      hostname_num > SETTINGS_HOSTNAME_MAX)
+    hostname_num = 0;
+  s.hostname_num = hostname_num;
+
+  uint8_t attenuation = SETTINGS_ATTEN_DEFAULT;
+  if (radio_settings_load_attenuation(&attenuation) != ESP_OK || attenuation < SETTINGS_ATTEN_MIN ||
+      attenuation > SETTINGS_ATTEN_MAX)
+    attenuation = SETTINGS_ATTEN_DEFAULT;
+  s.attenuation = attenuation;
+
+  uint8_t backlight_minutes = SETTINGS_BACKLIGHT_DEFAULT_MIN;
+  if (radio_settings_load_backlight_minutes(&backlight_minutes) != ESP_OK ||
+      backlight_minutes > SETTINGS_BACKLIGHT_MAX_MIN)
+    backlight_minutes = SETTINGS_BACKLIGHT_DEFAULT_MIN;
+  s.backlight_minutes = backlight_minutes;
+  radio_input_set_backlight_timeout_minutes(s.backlight_minutes);
+
   //-- A malformed/missing stations.json must never crash the device: show an
   //-- ERROR screen with the reason (e.g. JSON line/char) and boot on with an
   //-- empty station list instead. The web GUI's stations import/Manage
@@ -479,12 +658,13 @@ void app_main(void)
   radio_display_status("");
   ESP_ERROR_CHECK(radio_audio_init());
   radio_audio_set_volume(s.volume);
+  radio_audio_set_attenuation(s.attenuation);
   radio_audio_set_title_callback(title_cb, NULL);
   radio_audio_set_mute_callback(on_audio_mute_changed, NULL);
   radio_audio_set_stall_callback(stall_cb, NULL);
   web_gui_set_state_applied_cb(on_web_gui_state_applied, NULL);
-  build_device_name(s_ap_ssid, sizeof(s_ap_ssid), ':');
-  build_device_name(s_mdns_hostname, sizeof(s_mdns_hostname), '-');
+  build_device_name_effective(s_ap_ssid, sizeof(s_ap_ssid), ':', s.hostname_num);
+  build_device_name_effective(s_mdns_hostname, sizeof(s_mdns_hostname), '-', s.hostname_num);
   wifi_prov_config_t wc = WIFI_PROV_DEFAULT_CONFIG();
   wc.ap_ssid = s_ap_ssid;
   wc.on_connected = on_wifi_connected;

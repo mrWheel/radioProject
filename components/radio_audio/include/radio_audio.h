@@ -8,6 +8,10 @@ esp_err_t radio_audio_init(void);
 esp_err_t radio_audio_play(const radio_station_t* station);
 void radio_audio_set_volume(int percent);
 int radio_audio_get_volume(void);
+//-- Output attenuation percent (1-100, default 50) applied on top of the
+//-- 0-100 volume percent; see the Settings menu's "Attenuating" item.
+void radio_audio_set_attenuation(int percent);
+int radio_audio_get_attenuation(void);
 void radio_audio_set_paused(bool paused);
 bool radio_audio_is_paused(void);
 bool radio_audio_is_muted(void);

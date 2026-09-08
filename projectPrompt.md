@@ -8,7 +8,7 @@ Build and maintain a production-oriented VS Code ESP-IDF internet-radio firmware
 2. Use MichMich's `esp-idf-wifi-provisioner` component for saved-credential connection and captive-portal fallback.
 3. Use mrWheel's `esp32_s3_piggyback` component from `https://github.com/mrWheel/esp32-s3-Piggyback`. Do NOT try to drive this board yourself. Read de API-documentation in the `README.md` file.
 4. Store preferred stations in `/littlefs/stations.json`. Validate bounded name, URL and codec fields and never crash on malformed input.
-5. Default UI mode is Volume. Rotation changes volume. EN-push opens Station Selection. Rotation browses stations and is the only action that restarts its 20-second inactivity timeout. EN-push selects/starts the highlighted station and returns to Volume. Timeout cancels browsing and returns to Volume. Reserve GPIO 1's button for future functionality.
+5. Default UI mode is Volume. Rotation changes volume. EN-push opens Station Selection. Rotation browses stations and is the only action that restarts its 20-second inactivity timeout. EN-push selects/starts the highlighted station and returns to Volume. Timeout cancels browsing and returns to Volume. The auxiliary button (GPIO1) has three distinct actions distinguished by press duration (`tft_ec11_press_t` in `esp32_s3_piggyback`): a short press dismisses the Technical-info screen if it's open, a medium press opens the Technical-info screen (SSID/IP/MAC/hostname/station count), and a long press opens the `[Settings]` menu (requirement 20).
 6. Keep networking, decoding, UI/input and file operations in separate components/tasks. No UI loop may block on network traffic and I2S functioning.
 7. Support direct HTTP/HTTPS MP3 and AAC streams. Feed decoded 16-bit PCM to the PCM5102A over I2S and apply bounded software volume.
 8. Embed the initial LittleFS content in the normal build/flash workflow using a custom partition table. Active default is 4 MB (`partitions/radio_4mb.csv`); an 8 MB variant (`partitions/radio_8mb.csv`) is available for boards with more flash.
@@ -62,11 +62,18 @@ Build and maintain a production-oriented VS Code ESP-IDF internet-radio firmware
     - `mrwheel/ota_upload`'s own manifest depends on `michmich/esp-idf-wifi-provisioner`, which is already vendored locally at `components/wifi_provisioner`; `main/idf_component.yml` uses a top-level `overrides:` entry (not `override_path`, which requires the local directory name to match the dependency name) to point that transitive dependency at the local copy instead of fetching a second one into `managed_components/`.
     - Per the standing instruction that firmware is never flashed/uploaded automatically, all actual OTA uploads (and USB flashing) remain a manual, user-run action; only `idf.py build`/`idf.py reconfigure` are run to verify compilation and partition fit.
 
+20. A long press of the auxiliary button (`RADIO_INPUT_AUX_LONG_PUSH`, `radio_input.c`) opens a `[Settings]` menu (`UI_SETTINGS` in `main/app_main.c`, `radio_display_settings()`) with 5 fixed rows: `Hostname#`, `Attenuating`, `Backlight off time`, `Reset Radio`, `Exit`.
+    - Rotating scrolls the highlighted row when not editing. An EN-push on `Hostname#`/`Attenuating`/`Backlight off time` enters edit mode (highlighted red-on-white); rotating then adjusts the value live; a second EN-push locks the value and persists it to NVS (`radio_settings_save_hostname_num()`/`_attenuation()`/`_backlight_minutes()`). An EN-push on `Reset Radio` immediately calls `esp_restart()` (settings are kept, not erased). An EN-push on `Exit`, or 120 seconds without any input (`SETTINGS_TIMEOUT_MS`), returns to the Volume screen.
+    - `Hostname#` (0-256, default 0) overrides the MAC-derived device name: 0 keeps `Radio-xx-yy-zz` (AP SSID) / `Radio-xx-xx-xx.local` (mDNS), a value 1-256 makes both `Radio-<n>` (`build_device_name_effective()`). Only applied at boot, not live, since the AP SSID/mDNS hostname are fixed once WiFi/mDNS have started.
+    - `Attenuating` (1-100%, default 50) replaces the previously hardcoded `OUTPUT_GAIN_PERCENT` fixed attenuation in `radio_audio.c` (`radio_audio_set_attenuation()`/`radio_audio_get_attenuation()`) applied on top of the 0-100 volume percent; applied live while editing and restored from NVS at boot.
+    - `Backlight off time` in minutes (0-60, default 5, 0 = never dim) replaces the previously hardcoded 5-minute backlight timeout in `radio_input.c` (`radio_input_set_backlight_timeout_minutes()`); applied live while editing and restored from NVS at boot.
+    - All three values are stored in the same NVS namespace as the saved station index (`radio_settings.c`); a fresh device with no saved value falls back to its documented default rather than failing.
+
 ## Hardware defaults
 
 - TFT BL 2, RST 4, CS 5, SCLK 12, MOSI 11, DC 15; 320×240
 - EC11 EN-push 6, A 16, B 17
-- Reserved auxiliary button 1
+- Auxiliary button 1: short press dismisses Technical-info, medium press opens Technical-info, long press opens the `[Settings]` menu (requirement 20)
 - I2S BCLK 38, LRCLK 40, DATA 42; DAC enable disabled by default (-1), override via menuconfig if your board needs one
 
 ## Quality bar
@@ -357,6 +364,7 @@ Do not assume that a URL that works in a browser is necessarily a direct audio s
 - [x] Enforce a single active web GUI `/ws` client with a takeover popup ("Connection lost or taken over") plus Reconnect button on the evicted client, an active ping/pong heartbeat so an idle-but-healthy connection is never mistaken for stalled, a "Connection stalled" popup for genuinely dead connections, `Cache-Control: no-store` on the served UI assets, and enough httpd/LWIP socket headroom for concurrent browser page loads (see requirement 17).
 - [x] Fixed the buffer-underrun refill-wait in `stream_task()` (`radio_audio.c`) breaking early once the 5 s stall-reconnect timeout elapsed, even though the ring buffer was still far below the 50% cushion; playback then resumed on whatever scraps had trickled in and drained again almost immediately, producing short bursts of audio instead of a clean stop until refill (see requirement 15).
 - [x] Add OTA firmware upload over the local network via `mrwheel/ota_upload`, on the 8MB (N8R8) partition table only, started once WiFi has an IP (see requirement 19).
+- [x] Add a `[Settings]` menu on the auxiliary button's long press (Hostname#, Attenuating, Backlight off time, Reset Radio, Exit), split the aux button's medium/long press into distinct events so Technical-info (medium) and Settings (long) no longer share one trigger, made output attenuation and backlight timeout runtime-configurable instead of hardcoded, and persisted all three values in NVS via `radio_settings` (see requirement 20).
 
 ### Remaining / high-priority follow-up work
 
