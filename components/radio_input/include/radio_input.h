@@ -1,5 +1,6 @@
 #pragma once
 #include "esp_err.h"
+#include <stdbool.h>
 typedef enum
 {
   RADIO_INPUT_ROTATE_LEFT,
@@ -16,3 +17,8 @@ esp_err_t radio_input_start(radio_input_callback_t cb, void* ctx);
 //-- 5 minutes until this is called; safe to call at any time after
 //-- radio_input_start().
 void radio_input_set_backlight_timeout_minutes(int minutes);
+//-- Overrides the encoder rotation direction (false = A->B, true = B->A).
+//-- Defaults to CONFIG_RADIO_ENCODER_REVERSED until this is called; safe to
+//-- call at any time after radio_input_start(). See the Settings menu's
+//-- "Encoder Direction" item.
+void radio_input_set_encoder_reversed(bool reversed);

@@ -17,11 +17,18 @@ void radio_display_technical(const char* ssid, const char* ip, const char* mac,
 //-- of the Volume screen (0-100). No-op on any other screen.
 void radio_display_buffer_fill(int percent);
 
-//-- [Settings] menu: Hostname#, Attenuating, Backlight off time, Reset Radio,
-//-- Exit. `editing` highlights the currently-selected value (red-on-white)
-//-- while the user is adjusting it; a second EN-push commits and clears it.
+//-- [Settings] menu: Hostname#, Attenuating (dB), Backlight off time,
+//-- Encoder Direction, PCM5102A BCLK/LRCLK/DATA/DAC-enable GPIO overrides,
+//-- Reset Radio, Exit. `editing` highlights the currently-selected value
+//-- (red-on-white) while the user is adjusting it; a second EN-push commits
+//-- and clears it. "Encoder Direction" instead toggles instantly on
+//-- EN-push (`encoder_reversed`: false = "A->B", true = "B->A") without
+//-- ever entering edit mode. Rows scroll (windowed) if they don't all fit
+//-- the screen at once.
 void radio_display_settings(size_t selected, bool editing, uint16_t hostname_num,
-                            uint8_t attenuation, uint8_t backlight_minutes);
+                            int8_t attenuation, uint8_t backlight_minutes, bool encoder_reversed,
+                            int16_t i2s_bclk, int16_t i2s_ws, int16_t i2s_dout,
+                            int16_t i2s_enable);
 
 //-- Equalizer screen: Bass/Mid/Treble, each -12..+12 dB. Rotating scrolls
 //-- the highlighted row (`selected`) when not editing; a short EC11 press

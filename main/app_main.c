@@ -5,6 +5,7 @@
 #include "radio_input.h"
 #include "radio_display.h"
 #include "radio_audio.h"
+#include "radio_board.h"
 #include "radio_settings.h"
 #include "web_gui.h"
 #include "esp_check.h"
@@ -20,7 +21,7 @@
 #include <string.h>
 
 //-- never remove this constant; it indicates the program version
-const char* PROG_VERSION = "v1.5.0";
+const char* PROG_VERSION = "v1.5.2";
 
 //-- How long the "Connected: SSID / IP" screen stays up before switching to
 //-- the Volume/PLAY screen, so the user can actually read it.
@@ -30,11 +31,13 @@ const char* PROG_VERSION = "v1.5.0";
 //-- bounds each editable item is clamped to (see radio_settings/radio_audio).
 #define SETTINGS_TIMEOUT_MS 120000
 #define SETTINGS_HOSTNAME_MAX 256
-#define SETTINGS_ATTEN_MIN 1
-#define SETTINGS_ATTEN_MAX 100
 #define SETTINGS_BACKLIGHT_MAX_MIN 60
-#define SETTINGS_ATTEN_DEFAULT 50
+#define SETTINGS_ATTEN_DEFAULT_DB (-6)
 #define SETTINGS_BACKLIGHT_DEFAULT_MIN 5
+//-- PCM5102A I2S GPIO range: -1 disables (DAC enable only), 0-48 is a valid
+//-- ESP32-S3 GPIO.
+#define SETTINGS_I2S_GPIO_MIN (-1)
+#define SETTINGS_I2S_GPIO_MAX 48
 //-- Equalizer screen: return to Volume after 30s without input (rotation,
 //-- EC-button press, or AUX-button press all reset this).
 #define EQ_TIMEOUT_MS 30000
@@ -51,6 +54,11 @@ typedef enum
   SETTINGS_ITEM_HOSTNAME,
   SETTINGS_ITEM_ATTENUATION,
   SETTINGS_ITEM_BACKLIGHT,
+  SETTINGS_ITEM_ENCODER_DIR,
+  SETTINGS_ITEM_I2S_BCLK,
+  SETTINGS_ITEM_I2S_WS,
+  SETTINGS_ITEM_I2S_DOUT,
+  SETTINGS_ITEM_I2S_ENABLE,
   SETTINGS_ITEM_RESET,
   SETTINGS_ITEM_EXIT,
   SETTINGS_ITEM_COUNT
@@ -74,8 +82,14 @@ typedef struct
   bool settings_editing;
   TickType_t settings_last_input;
   uint16_t hostname_num;
-  uint8_t attenuation;
+  int8_t attenuation;
   uint8_t backlight_minutes;
+  bool encoder_reversed;
+  //-- PCM5102A I2S GPIO overrides; boot-only, applied before radio_audio_init().
+  int16_t i2s_bclk;
+  int16_t i2s_ws;
+  int16_t i2s_dout;
+  int16_t i2s_enable;
   size_t eq_selected;
   bool eq_editing;
   int8_t eq_bass;
@@ -91,7 +105,7 @@ typedef struct
 static QueueHandle_t s_events;
 static app_state_t s = {.mode = UI_VOLUME,
                        .volume = CONFIG_RADIO_DEFAULT_VOLUME,
-                       .attenuation = SETTINGS_ATTEN_DEFAULT,
+                       .attenuation = SETTINGS_ATTEN_DEFAULT_DB,
                        .backlight_minutes = SETTINGS_BACKLIGHT_DEFAULT_MIN};
 //-- Filled once in app_main() from the last 3 MAC bytes; the AP SSID uses
 //-- colons, the mDNS hostname uses dashes since DNS labels can't hold colons.
@@ -321,7 +335,8 @@ static void show_volume(void)
 static void show_settings(void)
 {
   radio_display_settings(s.settings_item, s.settings_editing, s.hostname_num, s.attenuation,
-                         s.backlight_minutes);
+                         s.backlight_minutes, s.encoder_reversed, s.i2s_bclk, s.i2s_ws,
+                         s.i2s_dout, s.i2s_enable);
 }
 
 static void show_equalizer(void)
@@ -522,6 +537,15 @@ static void ui_task(void* arg)
             ESP_LOGI("radio", "Settings: Reset Radio selected, rebooting");
             esp_restart();
           }
+          else if (s.settings_item == SETTINGS_ITEM_ENCODER_DIR)
+          {
+            //-- Toggle-style item: no separate edit mode, EN-push flips and
+            //-- persists it immediately.
+            s.encoder_reversed = !s.encoder_reversed;
+            radio_input_set_encoder_reversed(s.encoder_reversed);
+            radio_settings_save_encoder_reversed(s.encoder_reversed ? 1 : 0);
+            show_settings();
+          }
           else if (s.settings_editing)
           {
             //-- Second short-press: lock the value in and persist it.
@@ -536,6 +560,18 @@ static void ui_task(void* arg)
               break;
             case SETTINGS_ITEM_BACKLIGHT:
               radio_settings_save_backlight_minutes(s.backlight_minutes);
+              break;
+            case SETTINGS_ITEM_I2S_BCLK:
+              radio_settings_save_i2s_bclk(s.i2s_bclk);
+              break;
+            case SETTINGS_ITEM_I2S_WS:
+              radio_settings_save_i2s_ws(s.i2s_ws);
+              break;
+            case SETTINGS_ITEM_I2S_DOUT:
+              radio_settings_save_i2s_dout(s.i2s_dout);
+              break;
+            case SETTINGS_ITEM_I2S_ENABLE:
+              radio_settings_save_i2s_enable(s.i2s_enable);
               break;
             default:
               break;
@@ -594,11 +630,11 @@ static void ui_task(void* arg)
             case SETTINGS_ITEM_ATTENUATION:
             {
               long next = (long)s.attenuation + d;
-              if (next < SETTINGS_ATTEN_MIN)
-                next = SETTINGS_ATTEN_MIN;
-              if (next > SETTINGS_ATTEN_MAX)
-                next = SETTINGS_ATTEN_MAX;
-              s.attenuation = (uint8_t)next;
+              if (next < RADIO_AUDIO_ATTEN_MIN_DB)
+                next = RADIO_AUDIO_ATTEN_MIN_DB;
+              if (next > RADIO_AUDIO_ATTEN_MAX_DB)
+                next = RADIO_AUDIO_ATTEN_MAX_DB;
+              s.attenuation = (int8_t)next;
               radio_audio_set_attenuation(s.attenuation);
               break;
             }
@@ -611,6 +647,49 @@ static void ui_task(void* arg)
                 next = SETTINGS_BACKLIGHT_MAX_MIN;
               s.backlight_minutes = (uint8_t)next;
               radio_input_set_backlight_timeout_minutes(s.backlight_minutes);
+              break;
+            }
+            //-- I2S GPIO pins are boot-only (latched once by
+            //-- radio_audio_init()); adjusting/saving here only takes
+            //-- effect after the next "Reset Radio" or power cycle.
+            case SETTINGS_ITEM_I2S_BCLK:
+            {
+              long next = (long)s.i2s_bclk + d;
+              if (next < SETTINGS_I2S_GPIO_MIN)
+                next = SETTINGS_I2S_GPIO_MIN;
+              if (next > SETTINGS_I2S_GPIO_MAX)
+                next = SETTINGS_I2S_GPIO_MAX;
+              s.i2s_bclk = (int16_t)next;
+              break;
+            }
+            case SETTINGS_ITEM_I2S_WS:
+            {
+              long next = (long)s.i2s_ws + d;
+              if (next < SETTINGS_I2S_GPIO_MIN)
+                next = SETTINGS_I2S_GPIO_MIN;
+              if (next > SETTINGS_I2S_GPIO_MAX)
+                next = SETTINGS_I2S_GPIO_MAX;
+              s.i2s_ws = (int16_t)next;
+              break;
+            }
+            case SETTINGS_ITEM_I2S_DOUT:
+            {
+              long next = (long)s.i2s_dout + d;
+              if (next < SETTINGS_I2S_GPIO_MIN)
+                next = SETTINGS_I2S_GPIO_MIN;
+              if (next > SETTINGS_I2S_GPIO_MAX)
+                next = SETTINGS_I2S_GPIO_MAX;
+              s.i2s_dout = (int16_t)next;
+              break;
+            }
+            case SETTINGS_ITEM_I2S_ENABLE:
+            {
+              long next = (long)s.i2s_enable + d;
+              if (next < SETTINGS_I2S_GPIO_MIN)
+                next = SETTINGS_I2S_GPIO_MIN;
+              if (next > SETTINGS_I2S_GPIO_MAX)
+                next = SETTINGS_I2S_GPIO_MAX;
+              s.i2s_enable = (int16_t)next;
               break;
             }
             default:
@@ -748,10 +827,10 @@ void app_main(void)
     hostname_num = 0;
   s.hostname_num = hostname_num;
 
-  uint8_t attenuation = SETTINGS_ATTEN_DEFAULT;
-  if (radio_settings_load_attenuation(&attenuation) != ESP_OK || attenuation < SETTINGS_ATTEN_MIN ||
-      attenuation > SETTINGS_ATTEN_MAX)
-    attenuation = SETTINGS_ATTEN_DEFAULT;
+  int8_t attenuation = SETTINGS_ATTEN_DEFAULT_DB;
+  if (radio_settings_load_attenuation(&attenuation) != ESP_OK ||
+      attenuation < RADIO_AUDIO_ATTEN_MIN_DB || attenuation > RADIO_AUDIO_ATTEN_MAX_DB)
+    attenuation = SETTINGS_ATTEN_DEFAULT_DB;
   s.attenuation = attenuation;
 
   uint8_t backlight_minutes = SETTINGS_BACKLIGHT_DEFAULT_MIN;
@@ -760,6 +839,41 @@ void app_main(void)
     backlight_minutes = SETTINGS_BACKLIGHT_DEFAULT_MIN;
   s.backlight_minutes = backlight_minutes;
   radio_input_set_backlight_timeout_minutes(s.backlight_minutes);
+
+  uint8_t encoder_reversed = RADIO_ENCODER_REVERSED_DEFAULT;
+  if (radio_settings_load_encoder_reversed(&encoder_reversed) != ESP_OK)
+    encoder_reversed = RADIO_ENCODER_REVERSED_DEFAULT;
+  s.encoder_reversed = encoder_reversed != 0;
+  radio_input_set_encoder_reversed(s.encoder_reversed);
+
+  //-- PCM5102A I2S GPIO overrides: default is the "Radio hardware" Kconfig
+  //-- value, applied only once here (before radio_audio_init()) since the
+  //-- pins are latched at I2S channel setup, same boot-only pattern as
+  //-- Hostname#.
+  int16_t i2s_bclk = RADIO_I2S_BCLK;
+  if (radio_settings_load_i2s_bclk(&i2s_bclk) != ESP_OK || i2s_bclk < SETTINGS_I2S_GPIO_MIN ||
+      i2s_bclk > SETTINGS_I2S_GPIO_MAX)
+    i2s_bclk = RADIO_I2S_BCLK;
+  s.i2s_bclk = i2s_bclk;
+
+  int16_t i2s_ws = RADIO_I2S_WS;
+  if (radio_settings_load_i2s_ws(&i2s_ws) != ESP_OK || i2s_ws < SETTINGS_I2S_GPIO_MIN ||
+      i2s_ws > SETTINGS_I2S_GPIO_MAX)
+    i2s_ws = RADIO_I2S_WS;
+  s.i2s_ws = i2s_ws;
+
+  int16_t i2s_dout = RADIO_I2S_DOUT;
+  if (radio_settings_load_i2s_dout(&i2s_dout) != ESP_OK || i2s_dout < SETTINGS_I2S_GPIO_MIN ||
+      i2s_dout > SETTINGS_I2S_GPIO_MAX)
+    i2s_dout = RADIO_I2S_DOUT;
+  s.i2s_dout = i2s_dout;
+
+  int16_t i2s_enable = RADIO_I2S_ENABLE;
+  if (radio_settings_load_i2s_enable(&i2s_enable) != ESP_OK || i2s_enable < SETTINGS_I2S_GPIO_MIN ||
+      i2s_enable > SETTINGS_I2S_GPIO_MAX)
+    i2s_enable = RADIO_I2S_ENABLE;
+  s.i2s_enable = i2s_enable;
+  radio_audio_set_i2s_pins(s.i2s_bclk, s.i2s_ws, s.i2s_dout, s.i2s_enable);
 
   //-- Equalizer: default/fallback is 0dB (no correction) per band, same as
   //-- a missing NVS value or a value outside -12..+12 (defensive against a

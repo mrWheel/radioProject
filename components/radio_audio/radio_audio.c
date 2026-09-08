@@ -47,6 +47,12 @@ static i2s_chan_handle_t s_tx;
 static TaskHandle_t s_stream_task;
 static TaskHandle_t s_fetch_task;
 static QueueHandle_t s_queue;
+//-- I2S GPIO pins, defaulting to the "Radio hardware" Kconfig values;
+//-- overridable via radio_audio_set_i2s_pins() before radio_audio_init().
+static int s_i2s_bclk_gpio = RADIO_I2S_BCLK;
+static int s_i2s_ws_gpio = RADIO_I2S_WS;
+static int s_i2s_dout_gpio = RADIO_I2S_DOUT;
+static int s_i2s_enable_gpio = RADIO_I2S_ENABLE;
 static volatile int s_volume = 60;
 static volatile bool s_stream_running;
 static volatile bool s_fetch_running;
@@ -85,16 +91,19 @@ static radio_audio_stall_cb_t s_stall_cb;
 static void* s_stall_ctx;
 //-- PCM5102A output level was reported too loud at every volume setting, so
 //-- an extra attenuation is applied on top of the 0-100 volume percent to
-//-- reduce the overall output amplitude. Adjustable (1-100) via the
-//-- Settings menu's "Attenuating" item, default 50; see radio_settings.
-static volatile int s_atten_percent = 50;
+//-- reduce the overall output amplitude. Adjustable in dB (-24..0) via the
+//-- Settings menu's "Attenuating" item, default -6dB; see radio_settings.
+//-- s_atten_scaled is 10000*10^(db/20) (0dB -> 10000, i.e. unity), cached so
+//-- apply_volume() never has to call powf() per sample.
+static volatile int s_atten_db = -6;
+static volatile int s_atten_scaled = 5012;
 
 static void apply_volume(int16_t* pcm, size_t samples)
 {
   int v = s_volume;
-  int atten = s_atten_percent;
+  int atten = s_atten_scaled;
   for (size_t i = 0; i < samples; i++)
-    pcm[i] = (int16_t)(((int32_t)pcm[i] * v * atten) / 10000);
+    pcm[i] = (int16_t)(((int64_t)pcm[i] * v * atten) / 1000000);
 }
 
 //-- 3-band software equalizer (bass low-shelf @100Hz, mid peaking @1kHz,
@@ -1442,15 +1451,23 @@ static void audio_task(void* arg)
   }
 }
 
+void radio_audio_set_i2s_pins(int bclk_gpio, int ws_gpio, int dout_gpio, int enable_gpio)
+{
+  s_i2s_bclk_gpio = bclk_gpio;
+  s_i2s_ws_gpio = ws_gpio;
+  s_i2s_dout_gpio = dout_gpio;
+  s_i2s_enable_gpio = enable_gpio;
+}
+
 esp_err_t radio_audio_init(void)
 {
   //-- Flat (0dB) coefficients so the EQ is a safe no-op even if a station
   //-- starts playing before app_main applies loaded/default dB values.
   eq_recompute_coeffs();
-  if (RADIO_I2S_ENABLE >= 0)
+  if (s_i2s_enable_gpio >= 0)
   {
-    gpio_set_direction(RADIO_I2S_ENABLE, GPIO_MODE_OUTPUT);
-    gpio_set_level(RADIO_I2S_ENABLE, 1);
+    gpio_set_direction(s_i2s_enable_gpio, GPIO_MODE_OUTPUT);
+    gpio_set_level(s_i2s_enable_gpio, 1);
   }
   esp_audio_dec_register_default();
   i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
@@ -1465,9 +1482,9 @@ esp_err_t radio_audio_init(void)
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(44100),
       .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
       .gpio_cfg = {.mclk = I2S_GPIO_UNUSED,
-                   .bclk = RADIO_I2S_BCLK,
-                   .ws = RADIO_I2S_WS,
-                   .dout = RADIO_I2S_DOUT,
+                   .bclk = s_i2s_bclk_gpio,
+                   .ws = s_i2s_ws_gpio,
+                   .dout = s_i2s_dout_gpio,
                    .din = I2S_GPIO_UNUSED,
                    .invert_flags = {0}}};
   ESP_ERROR_CHECK(i2s_channel_init_std_mode(s_tx, &sc));
@@ -1511,13 +1528,18 @@ int radio_audio_get_volume(void)
 {
   return s_volume;
 }
-void radio_audio_set_attenuation(int p)
+void radio_audio_set_attenuation(int db)
 {
-  s_atten_percent = p < 1 ? 1 : (p > 100 ? 100 : p);
+  if (db < RADIO_AUDIO_ATTEN_MIN_DB)
+    db = RADIO_AUDIO_ATTEN_MIN_DB;
+  if (db > RADIO_AUDIO_ATTEN_MAX_DB)
+    db = RADIO_AUDIO_ATTEN_MAX_DB;
+  s_atten_db = db;
+  s_atten_scaled = (int)lroundf(10000.0f * powf(10.0f, (float)db / 20.0f));
 }
 int radio_audio_get_attenuation(void)
 {
-  return s_atten_percent;
+  return s_atten_db;
 }
 void radio_audio_set_paused(bool paused)
 {

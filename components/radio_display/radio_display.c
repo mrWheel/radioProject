@@ -51,8 +51,13 @@ typedef struct
   size_t settings_selected;
   bool settings_editing;
   uint16_t settings_hostname_num;
-  uint8_t settings_attenuation;
+  int8_t settings_attenuation;
   uint8_t settings_backlight_minutes;
+  bool settings_encoder_reversed;
+  int16_t settings_i2s_bclk;
+  int16_t settings_i2s_ws;
+  int16_t settings_i2s_dout;
+  int16_t settings_i2s_enable;
   size_t eq_selected;
   bool eq_editing;
   int8_t eq_bass_db;
@@ -494,12 +499,37 @@ static void draw_technical(const display_message_t* message)
   }
 }
 
-//-- [Settings] menu: 5 fixed rows (Hostname#, Attenuating, Backlight off
-//-- time, Reset Radio, Exit), always fully redrawn since updates are rare
-//-- (rotation/edit), unlike the windowed station list.
-#define SETTINGS_ITEM_COUNT 5
+//-- [Settings] menu: 10 fixed rows (Hostname#, Attenuating, Backlight off
+//-- time, Encoder Direction, PCM5102A BCLK/LRCLK/DATA/DAC-enable GPIO, Reset
+//-- Radio, Exit), windowed/scrolled like the station list since they don't
+//-- all fit on screen at once; always fully redrawn since updates are rare
+//-- (rotation/edit).
+#define SETTINGS_ITEM_COUNT 10
 static const char* k_settings_labels[SETTINGS_ITEM_COUNT] = {
-    "Hostname#", "Attenuating", "Backlight off", "Reset Radio", "Exit"};
+    "Hostname#",      "Attenuating",     "Backlight off",   "Encoder Direction",
+    "PCM5102A BCLK",  "PCM5102A LRCLK",  "PCM5102A DATA",   "PCM5102A DAC en",
+    "Reset Radio",    "Exit"};
+
+//-- Rows that hold a live-editable value (long edit mode, red-on-white while
+//-- editing); "Encoder Direction" toggles instantly on EN-push instead, and
+//-- Reset Radio/Exit are plain actions - none of those three ever enter
+//-- edit mode.
+static bool settings_row_is_editable(size_t index)
+{
+  switch (index)
+  {
+  case 0: //-- Hostname#
+  case 1: //-- Attenuating
+  case 2: //-- Backlight off
+  case 4: //-- PCM5102A BCLK
+  case 5: //-- PCM5102A LRCLK
+  case 6: //-- PCM5102A DATA
+  case 7: //-- PCM5102A DAC enable
+    return true;
+  default:
+    return false;
+  }
+}
 
 static void format_settings_value(size_t index, const display_message_t* message, char* out,
                                   size_t out_len)
@@ -513,13 +543,31 @@ static void format_settings_value(size_t index, const display_message_t* message
       snprintf(out, out_len, "%u", (unsigned)message->settings_hostname_num);
     break;
   case 1:
-    snprintf(out, out_len, "%u%%", (unsigned)message->settings_attenuation);
+    snprintf(out, out_len, "%ddB", (int)message->settings_attenuation);
     break;
   case 2:
     if (message->settings_backlight_minutes == 0)
       snprintf(out, out_len, "never");
     else
       snprintf(out, out_len, "%um", (unsigned)message->settings_backlight_minutes);
+    break;
+  case 3:
+    snprintf(out, out_len, "%s", message->settings_encoder_reversed ? "B->A" : "A->B");
+    break;
+  case 4:
+    snprintf(out, out_len, "%d", (int)message->settings_i2s_bclk);
+    break;
+  case 5:
+    snprintf(out, out_len, "%d", (int)message->settings_i2s_ws);
+    break;
+  case 6:
+    snprintf(out, out_len, "%d", (int)message->settings_i2s_dout);
+    break;
+  case 7:
+    if (message->settings_i2s_enable < 0)
+      snprintf(out, out_len, "off");
+    else
+      snprintf(out, out_len, "%d", (int)message->settings_i2s_enable);
     break;
   default:
     out[0] = '\0';
@@ -530,19 +578,42 @@ static void format_settings_value(size_t index, const display_message_t* message
 static void draw_settings(const display_message_t* message)
 {
   uint16_t width = tft_ec11_width();
+  uint16_t height = tft_ec11_height();
   const int title_h = DISPLAY_HEADER_H;
   const int row_h = 24;
   const int scale = 2;
+  //-- Reserve space for the bottom hint line, same as draw_station_list().
+  const int hint_h = 8 * 2 + 12;
   size_t slot_chars = (width - 8) / (6 * scale);
+
+  int visible_rows = (height - title_h - hint_h) / row_h;
+  if (visible_rows < 1)
+    visible_rows = 1;
+  if ((size_t)visible_rows > SETTINGS_ITEM_COUNT)
+    visible_rows = SETTINGS_ITEM_COUNT;
+
+  //-- Windowed the same way as draw_station_list(): center the selection in
+  //-- the visible window where possible, clamped to the list's ends.
+  size_t max_start = SETTINGS_ITEM_COUNT > (size_t)visible_rows
+                         ? SETTINGS_ITEM_COUNT - (size_t)visible_rows
+                         : 0;
+  size_t half = (size_t)visible_rows / 2;
+  size_t start = message->settings_selected > half ? message->settings_selected - half : 0;
+  if (start > max_start)
+    start = max_start;
 
   tft_ec11_set_background(TFT_EC11_BLACK);
   tft_ec11_clear();
   draw_header(width, "Settings", 2);
+  draw_header_version(width);
 
-  for (size_t i = 0; i < SETTINGS_ITEM_COUNT; i++)
+  for (int row = 0; row < visible_rows; row++)
   {
+    size_t i = start + (size_t)row;
+    if (i >= SETTINGS_ITEM_COUNT)
+      break;
     bool selected = i == message->settings_selected;
-    int y = title_h + (int)i * row_h + 2;
+    int y = title_h + row * row_h + 2;
     char value[24];
     char line[48];
     format_settings_value(i, message, value, sizeof(value));
@@ -552,9 +623,9 @@ static void draw_settings(const display_message_t* message)
       snprintf(line, sizeof(line), "%s", k_settings_labels[i]);
 
     uint16_t bg = selected ? TFT_EC11_WHITE : TFT_EC11_BLACK;
-    //-- Editing an active value (rows 0-2) is highlighted red-on-white so
-    //-- it's unmistakably different from just having it selected.
-    uint16_t fg = selected && message->settings_editing && i < 3
+    //-- Editing an active value is highlighted red-on-white so it's
+    //-- unmistakably different from just having it selected.
+    uint16_t fg = selected && message->settings_editing && settings_row_is_editable(i)
                       ? TFT_EC11_RED
                       : (selected ? TFT_EC11_BLACK : TFT_EC11_WHITE);
 
@@ -793,14 +864,20 @@ void radio_display_buffer_fill(int percent)
 }
 
 void radio_display_settings(size_t selected, bool editing, uint16_t hostname_num,
-                            uint8_t attenuation, uint8_t backlight_minutes)
+                            int8_t attenuation, uint8_t backlight_minutes, bool encoder_reversed,
+                            int16_t i2s_bclk, int16_t i2s_ws, int16_t i2s_dout, int16_t i2s_enable)
 {
   display_message_t message = {.mode = DISPLAY_MODE_SETTINGS,
                                .settings_selected = selected,
                                .settings_editing = editing,
                                .settings_hostname_num = hostname_num,
                                .settings_attenuation = attenuation,
-                               .settings_backlight_minutes = backlight_minutes};
+                               .settings_backlight_minutes = backlight_minutes,
+                               .settings_encoder_reversed = encoder_reversed,
+                               .settings_i2s_bclk = i2s_bclk,
+                               .settings_i2s_ws = i2s_ws,
+                               .settings_i2s_dout = i2s_dout,
+                               .settings_i2s_enable = i2s_enable};
   if (s_queue)
     (void)xQueueSend(s_queue, &message, 0);
 }

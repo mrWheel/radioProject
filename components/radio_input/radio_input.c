@@ -1,6 +1,7 @@
 #include "radio_input.h"
 #include "esp32_s3_piggyback.h"
 #include "esp_check.h"
+#include "radio_board.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -11,6 +12,9 @@ static radio_input_callback_t s_cb;
 static void* s_ctx;
 //-- 0 means "never dim"; set from the Settings menu (see radio_settings).
 static volatile uint32_t s_backlight_timeout_ms = RADIO_BACKLIGHT_TIMEOUT_MS_DEFAULT;
+//-- Runtime override of the Kconfig default; set from the Settings menu's
+//-- "Encoder Direction" item (see radio_settings).
+static volatile bool s_encoder_reversed = RADIO_ENCODER_REVERSED_DEFAULT;
 
 void radio_input_set_backlight_timeout_minutes(int minutes)
 {
@@ -19,6 +23,11 @@ void radio_input_set_backlight_timeout_minutes(int minutes)
   if (minutes > RADIO_BACKLIGHT_TIMEOUT_MAX_MIN)
     minutes = RADIO_BACKLIGHT_TIMEOUT_MAX_MIN;
   s_backlight_timeout_ms = minutes == 0 ? 0 : (uint32_t)minutes * 60 * 1000;
+}
+
+void radio_input_set_encoder_reversed(bool reversed)
+{
+  s_encoder_reversed = reversed;
 }
 
 static void input_task(void* arg)
@@ -42,9 +51,8 @@ static void input_task(void* arg)
       if (event.type == TFT_EC11_EVENT_ROTATE)
       {
         bool right = event.steps > 0;
-#if CONFIG_RADIO_ENCODER_REVERSED
-        right = !right;
-#endif
+        if (s_encoder_reversed)
+          right = !right;
         s_cb(right ? RADIO_INPUT_ROTATE_RIGHT : RADIO_INPUT_ROTATE_LEFT, s_ctx);
       }
       //-- Reported on release (like the AUX button) rather than on

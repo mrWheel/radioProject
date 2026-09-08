@@ -4,13 +4,21 @@
 typedef void (*radio_audio_title_cb_t)(const char* title, void* ctx);
 typedef void (*radio_audio_mute_cb_t)(bool muted, void* ctx);
 typedef void (*radio_audio_stall_cb_t)(bool stalled, void* ctx);
+//-- Overrides the PCM5102A I2S GPIO pins (default: "Radio hardware" Kconfig
+//-- values, RADIO_I2S_BCLK/WS/DOUT/ENABLE). Must be called before
+//-- radio_audio_init(); the pins are only latched once at I2S channel setup,
+//-- same as the Settings menu's Hostname# (boot-only, not live). Pass -1 for
+//-- enable_gpio to leave the DAC enable pin untouched.
+void radio_audio_set_i2s_pins(int bclk_gpio, int ws_gpio, int dout_gpio, int enable_gpio);
 esp_err_t radio_audio_init(void);
 esp_err_t radio_audio_play(const radio_station_t* station);
 void radio_audio_set_volume(int percent);
 int radio_audio_get_volume(void);
-//-- Output attenuation percent (1-100, default 50) applied on top of the
+//-- Output attenuation in dB (-24..0, default -6) applied on top of the
 //-- 0-100 volume percent; see the Settings menu's "Attenuating" item.
-void radio_audio_set_attenuation(int percent);
+#define RADIO_AUDIO_ATTEN_MIN_DB (-24)
+#define RADIO_AUDIO_ATTEN_MAX_DB 0
+void radio_audio_set_attenuation(int db);
 int radio_audio_get_attenuation(void);
 void radio_audio_set_paused(bool paused);
 bool radio_audio_is_paused(void);
