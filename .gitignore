@@ -13,6 +13,9 @@ sdkconfig.old
 # PlatformIO output, if used locally
 .pio/
 
+# python temp
+__pycach__
+
 # macOS
 .DS_Store
 .AppleDouble
