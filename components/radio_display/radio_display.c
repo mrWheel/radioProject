@@ -28,7 +28,8 @@ typedef enum
   DISPLAY_MODE_TITLE,
   DISPLAY_MODE_BUFFER_FILL,
   DISPLAY_MODE_ERROR,
-  DISPLAY_MODE_SETTINGS
+  DISPLAY_MODE_SETTINGS,
+  DISPLAY_MODE_EQUALIZER
 } display_mode_t;
 
 typedef struct
@@ -52,6 +53,11 @@ typedef struct
   uint16_t settings_hostname_num;
   uint8_t settings_attenuation;
   uint8_t settings_backlight_minutes;
+  size_t eq_selected;
+  bool eq_editing;
+  int8_t eq_bass_db;
+  int8_t eq_mid_db;
+  int8_t eq_treble_db;
 } display_message_t;
 
 static QueueHandle_t s_queue;
@@ -564,6 +570,55 @@ static void draw_settings(const display_message_t* message)
   draw_hint("Turn:Scroll EN:Edit");
 }
 
+//-- Equalizer screen: 3 fixed rows (Bass/Mid/Treble), always fully redrawn
+//-- (updates are rare - one rotation click or one short press at a time).
+//-- The selected row is highlighted the same way as the Settings menu
+//-- (white background), so the two screens share one visual language.
+#define EQ_ITEM_COUNT 3
+static const char* k_eq_labels[EQ_ITEM_COUNT] = {"Bass", "Mid", "Treble"};
+
+static void draw_equalizer(const display_message_t* message)
+{
+  uint16_t width = tft_ec11_width();
+  const int title_h = DISPLAY_HEADER_H;
+  const int row_h = 24;
+  const int scale = 2;
+  //-- One blank row's worth of space between the header and "Bass" so the
+  //-- list doesn't start flush against the header, matching how the other
+  //-- list-style screens leave breathing room below their header.
+  const int top_gap = row_h;
+  size_t slot_chars = (width - 8) / (6 * scale);
+  int8_t values[EQ_ITEM_COUNT] = {message->eq_bass_db, message->eq_mid_db, message->eq_treble_db};
+
+  tft_ec11_set_background(TFT_EC11_BLACK);
+  tft_ec11_clear();
+  draw_header(width, "Equalizer", 2);
+
+  for (size_t i = 0; i < EQ_ITEM_COUNT; i++)
+  {
+    bool selected = i == message->eq_selected;
+    int y = title_h + top_gap + (int)i * row_h + 2;
+    char line[48];
+    snprintf(line, sizeof(line), "%s %+d dB", k_eq_labels[i], (int)values[i]);
+
+    uint16_t bg = selected ? TFT_EC11_WHITE : TFT_EC11_BLACK;
+    //-- Editing the selected band is highlighted red-on-white, same
+    //-- convention as the [Settings] menu's edit mode.
+    uint16_t fg = selected && message->eq_editing ? TFT_EC11_RED
+                                                   : (selected ? TFT_EC11_BLACK : TFT_EC11_WHITE);
+
+    tft_ec11_fill_rect(0, y - 2, width, row_h, bg);
+    tft_ec11_set_text_style(fg, scale);
+    size_t len = strlen(line);
+    if (len > slot_chars)
+      len = slot_chars;
+    tft_ec11_set_background(bg);
+    tft_ec11_draw_text(4, y, len, line);
+  }
+
+  draw_hint(message->eq_editing ? "Turn:+/-1dB EN:Accept" : "Turn:Scroll EN:Edit");
+}
+
 static void display_task(void* argument)
 {
   display_message_t message;
@@ -630,6 +685,10 @@ static void display_task(void* argument)
     case DISPLAY_MODE_SETTINGS:
       s_current_mode = DISPLAY_MODE_SETTINGS;
       draw_settings(&message);
+      break;
+    case DISPLAY_MODE_EQUALIZER:
+      s_current_mode = DISPLAY_MODE_EQUALIZER;
+      draw_equalizer(&message);
       break;
     case DISPLAY_MODE_BUFFER_FILL:
       //-- Only meaningful on the Volume screen where the bar lives;
@@ -742,6 +801,19 @@ void radio_display_settings(size_t selected, bool editing, uint16_t hostname_num
                                .settings_hostname_num = hostname_num,
                                .settings_attenuation = attenuation,
                                .settings_backlight_minutes = backlight_minutes};
+  if (s_queue)
+    (void)xQueueSend(s_queue, &message, 0);
+}
+
+void radio_display_equalizer(size_t selected, bool editing, int8_t bass_db, int8_t mid_db,
+                             int8_t treble_db)
+{
+  display_message_t message = {.mode = DISPLAY_MODE_EQUALIZER,
+                               .eq_selected = selected,
+                               .eq_editing = editing,
+                               .eq_bass_db = bass_db,
+                               .eq_mid_db = mid_db,
+                               .eq_treble_db = treble_db};
   if (s_queue)
     (void)xQueueSend(s_queue, &message, 0);
 }

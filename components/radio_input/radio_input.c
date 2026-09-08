@@ -47,9 +47,17 @@ static void input_task(void* arg)
 #endif
         s_cb(right ? RADIO_INPUT_ROTATE_RIGHT : RADIO_INPUT_ROTATE_LEFT, s_ctx);
       }
-      else if (event.type == TFT_EC11_EVENT_ENCODER_BUTTON && event.press == TFT_EC11_PRESS_DOWN)
+      //-- Reported on release (like the AUX button) rather than on
+      //-- press-down, so a short vs. long press on the EC11 button can be
+      //-- told apart (needed for the Equalizer screen's open/exit gesture).
+      else if (event.type == TFT_EC11_EVENT_ENCODER_BUTTON &&
+               (event.press == TFT_EC11_PRESS_SHORT || event.press == TFT_EC11_PRESS_MEDIUM))
       {
         s_cb(RADIO_INPUT_EN_PUSH, s_ctx);
+      }
+      else if (event.type == TFT_EC11_EVENT_ENCODER_BUTTON && event.press == TFT_EC11_PRESS_LONG)
+      {
+        s_cb(RADIO_INPUT_EN_LONG_PUSH, s_ctx);
       }
       else if (event.type == TFT_EC11_EVENT_AUX_BUTTON && event.press == TFT_EC11_PRESS_SHORT)
       {

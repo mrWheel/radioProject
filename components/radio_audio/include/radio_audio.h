@@ -20,3 +20,16 @@ void radio_audio_set_mute_callback(radio_audio_mute_cb_t cb, void* ctx);
 void radio_audio_set_stall_callback(radio_audio_stall_cb_t cb, void* ctx);
 //-- Live fill level of the network->decoder ring buffer, 0-100%
 int radio_audio_get_buffer_fill_percent(void);
+
+//-- 3-band software equalizer (bass/mid/treble), applied to decoded PCM
+//-- before software volume and before I2S. Range -12..+12 dB, 0 = no
+//-- correction. Coefficients update live and are thread-safe to call from
+//-- the UI task while audio is playing; see the Equalizer screen.
+#define RADIO_AUDIO_EQ_MIN_DB (-12)
+#define RADIO_AUDIO_EQ_MAX_DB (12)
+void radio_audio_set_eq_bass(int db);
+void radio_audio_set_eq_mid(int db);
+void radio_audio_set_eq_treble(int db);
+int radio_audio_get_eq_bass(void);
+int radio_audio_get_eq_mid(void);
+int radio_audio_get_eq_treble(void);

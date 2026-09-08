@@ -23,6 +23,13 @@ void radio_display_buffer_fill(int percent);
 void radio_display_settings(size_t selected, bool editing, uint16_t hostname_num,
                             uint8_t attenuation, uint8_t backlight_minutes);
 
+//-- Equalizer screen: Bass/Mid/Treble, each -12..+12 dB. Rotating scrolls
+//-- the highlighted row (`selected`) when not editing; a short EC11 press
+//-- enters edit mode (`editing`, highlighted red-on-white) where rotating
+//-- adjusts that row's value instead, and a second short press locks it in.
+void radio_display_equalizer(size_t selected, bool editing, int8_t bass_db, int8_t mid_db,
+                             int8_t treble_db);
+
 //-- Character budget of a single now-playing line at the scale
 //-- draw_now_playing_line() actually draws with, so callers that pre-wrap
 //-- text (main/app_main.c) don't have to duplicate the width formula.

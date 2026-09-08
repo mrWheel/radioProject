@@ -35,12 +35,16 @@ const char* PROG_VERSION = "v1.5.0";
 #define SETTINGS_BACKLIGHT_MAX_MIN 60
 #define SETTINGS_ATTEN_DEFAULT 50
 #define SETTINGS_BACKLIGHT_DEFAULT_MIN 5
+//-- Equalizer screen: return to Volume after 30s without input (rotation,
+//-- EC-button press, or AUX-button press all reset this).
+#define EQ_TIMEOUT_MS 30000
 typedef enum
 {
   UI_VOLUME,
   UI_STATION_SELECT,
   UI_TECHNICAL,
-  UI_SETTINGS
+  UI_SETTINGS,
+  UI_EQUALIZER
 } ui_mode_t;
 typedef enum
 {
@@ -51,6 +55,13 @@ typedef enum
   SETTINGS_ITEM_EXIT,
   SETTINGS_ITEM_COUNT
 } settings_item_t;
+typedef enum
+{
+  EQ_ITEM_BASS,
+  EQ_ITEM_MID,
+  EQ_ITEM_TREBLE,
+  EQ_ITEM_COUNT
+} eq_item_t;
 typedef struct
 {
   ui_mode_t mode;
@@ -65,6 +76,17 @@ typedef struct
   uint16_t hostname_num;
   uint8_t attenuation;
   uint8_t backlight_minutes;
+  size_t eq_selected;
+  bool eq_editing;
+  int8_t eq_bass;
+  int8_t eq_mid;
+  int8_t eq_treble;
+  //-- Last values actually written to NVS, so eq_save_if_changed() only
+  //-- writes bands that were really touched while the screen was open.
+  int8_t eq_bass_saved;
+  int8_t eq_mid_saved;
+  int8_t eq_treble_saved;
+  TickType_t eq_last_input;
 } app_state_t;
 static QueueHandle_t s_events;
 static app_state_t s = {.mode = UI_VOLUME,
@@ -302,6 +324,43 @@ static void show_settings(void)
                          s.backlight_minutes);
 }
 
+static void show_equalizer(void)
+{
+  radio_display_equalizer(s.eq_selected, s.eq_editing, s.eq_bass, s.eq_mid, s.eq_treble);
+}
+
+//-- Only writes bands that actually changed since the last save, so turning
+//-- the Equalizer screen on/off without touching a band never causes a
+//-- needless NVS write.
+static void eq_save_if_changed(void)
+{
+  if (s.eq_bass != s.eq_bass_saved)
+  {
+    radio_settings_save_eq_bass(s.eq_bass);
+    s.eq_bass_saved = s.eq_bass;
+  }
+  if (s.eq_mid != s.eq_mid_saved)
+  {
+    radio_settings_save_eq_mid(s.eq_mid);
+    s.eq_mid_saved = s.eq_mid;
+  }
+  if (s.eq_treble != s.eq_treble_saved)
+  {
+    radio_settings_save_eq_treble(s.eq_treble);
+    s.eq_treble_saved = s.eq_treble;
+  }
+}
+
+//-- Leaves the Equalizer screen (long-press or 30s-idle timeout): persist
+//-- whatever changed, keep the audio EQ active (it was already applied live
+//-- while adjusting), and return to Volume.
+static void eq_exit(void)
+{
+  eq_save_if_changed();
+  s.mode = UI_VOLUME;
+  show_volume();
+}
+
 static void show_technical(void)
 {
   wifi_ap_record_t ap_info;
@@ -392,6 +451,12 @@ static void ui_task(void* arg)
           s.mode = UI_VOLUME;
           show_volume();
         }
+        else if (s.mode == UI_EQUALIZER)
+        {
+          //-- Counts as user input for the 30s idle timeout, but has no
+          //-- other effect on this screen.
+          s.eq_last_input = xTaskGetTickCount();
+        }
         ESP_LOGI("radio", "AUX short press");
         continue;
       }
@@ -411,6 +476,22 @@ static void ui_task(void* arg)
         show_settings();
         continue;
       }
+      if (e == RADIO_INPUT_EN_LONG_PUSH)
+      {
+        if (s.mode == UI_VOLUME)
+        {
+          s.mode = UI_EQUALIZER;
+          s.eq_selected = EQ_ITEM_BASS;
+          s.eq_editing = false;
+          s.eq_last_input = xTaskGetTickCount();
+          show_equalizer();
+        }
+        else if (s.mode == UI_EQUALIZER)
+        {
+          eq_exit();
+        }
+        continue;
+      }
       if (e == RADIO_INPUT_EN_PUSH)
       {
         if (s.mode == UI_VOLUME)
@@ -419,6 +500,14 @@ static void ui_task(void* arg)
           s.selected = s.playing;
           s.last_rotation = xTaskGetTickCount();
           radio_display_station_list(s.selected);
+        }
+        else if (s.mode == UI_EQUALIZER)
+        {
+          //-- First short press: select the highlighted band for editing.
+          //-- Second short press: accept/lock the value back to scrolling.
+          s.eq_editing = !s.eq_editing;
+          s.eq_last_input = xTaskGetTickCount();
+          show_equalizer();
         }
         else if (s.mode == UI_SETTINGS)
         {
@@ -539,6 +628,48 @@ static void ui_task(void* arg)
           }
           show_settings();
         }
+        else if (s.mode == UI_EQUALIZER)
+        {
+          s.eq_last_input = xTaskGetTickCount();
+          if (!s.eq_editing)
+          {
+            //-- Not editing: rotation just scrolls Bass/Mid/Treble.
+            long next = (long)s.eq_selected + d;
+            if (next < 0)
+              next = 0;
+            if (next >= (long)EQ_ITEM_COUNT)
+              next = (long)EQ_ITEM_COUNT - 1;
+            s.eq_selected = (size_t)next;
+          }
+          else
+          {
+            int8_t* target = s.eq_selected == EQ_ITEM_BASS   ? &s.eq_bass
+                             : s.eq_selected == EQ_ITEM_MID  ? &s.eq_mid
+                                                              : &s.eq_treble;
+            long next = (long)*target + d;
+            if (next < RADIO_AUDIO_EQ_MIN_DB)
+              next = RADIO_AUDIO_EQ_MIN_DB;
+            if (next > RADIO_AUDIO_EQ_MAX_DB)
+              next = RADIO_AUDIO_EQ_MAX_DB;
+            *target = (int8_t)next;
+            //-- Applied immediately so the effect is audible while turning.
+            switch (s.eq_selected)
+            {
+            case EQ_ITEM_BASS:
+              radio_audio_set_eq_bass(s.eq_bass);
+              break;
+            case EQ_ITEM_MID:
+              radio_audio_set_eq_mid(s.eq_mid);
+              break;
+            case EQ_ITEM_TREBLE:
+              radio_audio_set_eq_treble(s.eq_treble);
+              break;
+            default:
+              break;
+            }
+          }
+          show_equalizer();
+        }
         else if (count)
         {
           long next = (long)s.selected + d;
@@ -569,6 +700,11 @@ static void ui_task(void* arg)
     {
       s.mode = UI_VOLUME;
       show_volume();
+    }
+    if (s.mode == UI_EQUALIZER &&
+        xTaskGetTickCount() - s.eq_last_input >= pdMS_TO_TICKS(EQ_TIMEOUT_MS))
+    {
+      eq_exit();
     }
   }
 }
@@ -625,6 +761,27 @@ void app_main(void)
   s.backlight_minutes = backlight_minutes;
   radio_input_set_backlight_timeout_minutes(s.backlight_minutes);
 
+  //-- Equalizer: default/fallback is 0dB (no correction) per band, same as
+  //-- a missing NVS value or a value outside -12..+12 (defensive against a
+  //-- corrupted/foreign NVS entry).
+  int8_t eq_bass = 0;
+  if (radio_settings_load_eq_bass(&eq_bass) != ESP_OK || eq_bass < RADIO_AUDIO_EQ_MIN_DB ||
+      eq_bass > RADIO_AUDIO_EQ_MAX_DB)
+    eq_bass = 0;
+  s.eq_bass = s.eq_bass_saved = eq_bass;
+
+  int8_t eq_mid = 0;
+  if (radio_settings_load_eq_mid(&eq_mid) != ESP_OK || eq_mid < RADIO_AUDIO_EQ_MIN_DB ||
+      eq_mid > RADIO_AUDIO_EQ_MAX_DB)
+    eq_mid = 0;
+  s.eq_mid = s.eq_mid_saved = eq_mid;
+
+  int8_t eq_treble = 0;
+  if (radio_settings_load_eq_treble(&eq_treble) != ESP_OK || eq_treble < RADIO_AUDIO_EQ_MIN_DB ||
+      eq_treble > RADIO_AUDIO_EQ_MAX_DB)
+    eq_treble = 0;
+  s.eq_treble = s.eq_treble_saved = eq_treble;
+
   //-- A malformed/missing stations.json must never crash the device: show an
   //-- ERROR screen with the reason (e.g. JSON line/char) and boot on with an
   //-- empty station list instead. The web GUI's stations import/Manage
@@ -659,6 +816,11 @@ void app_main(void)
   ESP_ERROR_CHECK(radio_audio_init());
   radio_audio_set_volume(s.volume);
   radio_audio_set_attenuation(s.attenuation);
+  //-- Applied as soon as the audio chain (I2S/decoder) is ready, so the
+  //-- loaded EQ settings are active from the very first played frame.
+  radio_audio_set_eq_bass(s.eq_bass);
+  radio_audio_set_eq_mid(s.eq_mid);
+  radio_audio_set_eq_treble(s.eq_treble);
   radio_audio_set_title_callback(title_cb, NULL);
   radio_audio_set_mute_callback(on_audio_mute_changed, NULL);
   radio_audio_set_stall_callback(stall_cb, NULL);

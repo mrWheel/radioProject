@@ -28,3 +28,12 @@ esp_err_t radio_settings_save_attenuation(uint8_t value);
 //-- when not present in NVS: 5.
 esp_err_t radio_settings_load_backlight_minutes(uint8_t *value);
 esp_err_t radio_settings_save_backlight_minutes(uint8_t value);
+
+//-- 3-band equalizer gains in dB (-12..+12). Default when not present in
+//-- NVS, or when the stored value is out of range: 0 (no correction).
+esp_err_t radio_settings_load_eq_bass(int8_t *value);
+esp_err_t radio_settings_save_eq_bass(int8_t value);
+esp_err_t radio_settings_load_eq_mid(int8_t *value);
+esp_err_t radio_settings_save_eq_mid(int8_t value);
+esp_err_t radio_settings_load_eq_treble(int8_t *value);
+esp_err_t radio_settings_save_eq_treble(int8_t value);

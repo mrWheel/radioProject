@@ -18,6 +18,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
+#include <math.h>
 typedef struct
 {
   radio_station_t station;
@@ -94,6 +95,223 @@ static void apply_volume(int16_t* pcm, size_t samples)
   int atten = s_atten_percent;
   for (size_t i = 0; i < samples; i++)
     pcm[i] = (int16_t)(((int32_t)pcm[i] * v * atten) / 10000);
+}
+
+//-- 3-band software equalizer (bass low-shelf @100Hz, mid peaking @1kHz,
+//-- treble high-shelf @10kHz), applied to decoded PCM before apply_volume().
+//-- Coefficients (RBJ Audio EQ Cookbook biquads) are recomputed whenever a
+//-- band's dB value or the stream's sample rate changes, and swapped into
+//-- the audio hot path under a short critical section (a handful of float
+//-- copies) so stream_task never blocks and never reads a half-updated set.
+//-- Per-channel/per-band filter state (Transposed Direct Form II) is only
+//-- ever touched by stream_task itself, so it needs no locking.
+#define EQ_BAND_BASS 0
+#define EQ_BAND_MID 1
+#define EQ_BAND_TREBLE 2
+#define EQ_BANDS 3
+#define EQ_CHANNELS 2
+#define EQ_BASS_FREQ_HZ 100.0f
+#define EQ_MID_FREQ_HZ 1000.0f
+#define EQ_TREBLE_FREQ_HZ 10000.0f
+#define EQ_SHELF_SLOPE 1.0f
+#define EQ_MID_Q 0.7f
+
+typedef struct
+{
+  float b0, b1, b2, a1, a2;
+} eq_biquad_t;
+
+typedef struct
+{
+  float z1, z2;
+} eq_state_t;
+
+static portMUX_TYPE s_eq_mux = portMUX_INITIALIZER_UNLOCKED;
+static eq_biquad_t s_eq_coeffs[EQ_BANDS]; //-- guarded by s_eq_mux
+static eq_state_t s_eq_state[EQ_CHANNELS][EQ_BANDS]; //-- only touched by stream_task
+static volatile int8_t s_eq_bass_db = 0;
+static volatile int8_t s_eq_mid_db = 0;
+static volatile int8_t s_eq_treble_db = 0;
+static volatile uint32_t s_eq_sample_rate = 44100;
+
+static void eq_lowshelf(float fs, float f0, float gain_db, float slope, eq_biquad_t* o)
+{
+  float a = powf(10.0f, gain_db / 40.0f);
+  float w0 = 2.0f * (float)M_PI * f0 / fs;
+  float cosw0 = cosf(w0);
+  float sinw0 = sinf(w0);
+  float alpha = sinw0 / 2.0f * sqrtf((a + 1.0f / a) * (1.0f / slope - 1.0f) + 2.0f);
+  float sqrt_a_2alpha = 2.0f * sqrtf(a) * alpha;
+
+  float b0 = a * ((a + 1.0f) - (a - 1.0f) * cosw0 + sqrt_a_2alpha);
+  float b1 = 2.0f * a * ((a - 1.0f) - (a + 1.0f) * cosw0);
+  float b2 = a * ((a + 1.0f) - (a - 1.0f) * cosw0 - sqrt_a_2alpha);
+  float a0 = (a + 1.0f) + (a - 1.0f) * cosw0 + sqrt_a_2alpha;
+  float a1 = -2.0f * ((a - 1.0f) + (a + 1.0f) * cosw0);
+  float a2 = (a + 1.0f) + (a - 1.0f) * cosw0 - sqrt_a_2alpha;
+
+  o->b0 = b0 / a0;
+  o->b1 = b1 / a0;
+  o->b2 = b2 / a0;
+  o->a1 = a1 / a0;
+  o->a2 = a2 / a0;
+}
+
+static void eq_highshelf(float fs, float f0, float gain_db, float slope, eq_biquad_t* o)
+{
+  float a = powf(10.0f, gain_db / 40.0f);
+  float w0 = 2.0f * (float)M_PI * f0 / fs;
+  float cosw0 = cosf(w0);
+  float sinw0 = sinf(w0);
+  float alpha = sinw0 / 2.0f * sqrtf((a + 1.0f / a) * (1.0f / slope - 1.0f) + 2.0f);
+  float sqrt_a_2alpha = 2.0f * sqrtf(a) * alpha;
+
+  float b0 = a * ((a + 1.0f) + (a - 1.0f) * cosw0 + sqrt_a_2alpha);
+  float b1 = -2.0f * a * ((a - 1.0f) + (a + 1.0f) * cosw0);
+  float b2 = a * ((a + 1.0f) + (a - 1.0f) * cosw0 - sqrt_a_2alpha);
+  float a0 = (a + 1.0f) - (a - 1.0f) * cosw0 + sqrt_a_2alpha;
+  float a1 = 2.0f * ((a - 1.0f) - (a + 1.0f) * cosw0);
+  float a2 = (a + 1.0f) - (a - 1.0f) * cosw0 - sqrt_a_2alpha;
+
+  o->b0 = b0 / a0;
+  o->b1 = b1 / a0;
+  o->b2 = b2 / a0;
+  o->a1 = a1 / a0;
+  o->a2 = a2 / a0;
+}
+
+static void eq_peaking(float fs, float f0, float gain_db, float q, eq_biquad_t* o)
+{
+  float a = powf(10.0f, gain_db / 40.0f);
+  float w0 = 2.0f * (float)M_PI * f0 / fs;
+  float cosw0 = cosf(w0);
+  float sinw0 = sinf(w0);
+  float alpha = sinw0 / (2.0f * q);
+
+  float b0 = 1.0f + alpha * a;
+  float b1 = -2.0f * cosw0;
+  float b2 = 1.0f - alpha * a;
+  float a0 = 1.0f + alpha / a;
+  float a1 = -2.0f * cosw0;
+  float a2 = 1.0f - alpha / a;
+
+  o->b0 = b0 / a0;
+  o->b1 = b1 / a0;
+  o->b2 = b2 / a0;
+  o->a1 = a1 / a0;
+  o->a2 = a2 / a0;
+}
+
+//-- Recomputes all 3 band coefficients for the current dB settings/sample
+//-- rate and atomically swaps them into the audio hot path. Cheap (a handful
+//-- of trig calls) and only ever called from the UI task (on a dB change) or
+//-- once per new stream (on a sample-rate change), never per PCM buffer.
+static void eq_recompute_coeffs(void)
+{
+  float fs = (float)(s_eq_sample_rate ? s_eq_sample_rate : 44100);
+  int bass_db = s_eq_bass_db;
+  int mid_db = s_eq_mid_db;
+  int treble_db = s_eq_treble_db;
+
+  eq_biquad_t bass, mid, treble;
+  eq_lowshelf(fs, EQ_BASS_FREQ_HZ, (float)bass_db, EQ_SHELF_SLOPE, &bass);
+  eq_peaking(fs, EQ_MID_FREQ_HZ, (float)mid_db, EQ_MID_Q, &mid);
+  eq_highshelf(fs, EQ_TREBLE_FREQ_HZ, (float)treble_db, EQ_SHELF_SLOPE, &treble);
+
+  //-- Headroom/preamp strategy: attenuate the whole cascade by the single
+  //-- largest positive band gain (baked into the bass stage, since gain is
+  //-- linear/cascade-multiplicative) so a full-scale signal at that band's
+  //-- peak frequency can't clip. At 0dB on all bands this is a no-op, so
+  //-- "0dB means no correction" still holds exactly.
+  int max_boost = bass_db > 0 ? bass_db : 0;
+  if (mid_db > max_boost)
+    max_boost = mid_db;
+  if (treble_db > max_boost)
+    max_boost = treble_db;
+  if (max_boost > 0)
+  {
+    float preamp = powf(10.0f, -(float)max_boost / 20.0f);
+    bass.b0 *= preamp;
+    bass.b1 *= preamp;
+    bass.b2 *= preamp;
+  }
+
+  portENTER_CRITICAL(&s_eq_mux);
+  s_eq_coeffs[EQ_BAND_BASS] = bass;
+  s_eq_coeffs[EQ_BAND_MID] = mid;
+  s_eq_coeffs[EQ_BAND_TREBLE] = treble;
+  portEXIT_CRITICAL(&s_eq_mux);
+}
+
+static int eq_clamp_db(int db)
+{
+  if (db < RADIO_AUDIO_EQ_MIN_DB)
+    return RADIO_AUDIO_EQ_MIN_DB;
+  if (db > RADIO_AUDIO_EQ_MAX_DB)
+    return RADIO_AUDIO_EQ_MAX_DB;
+  return db;
+}
+
+void radio_audio_set_eq_bass(int db)
+{
+  s_eq_bass_db = (int8_t)eq_clamp_db(db);
+  eq_recompute_coeffs();
+}
+void radio_audio_set_eq_mid(int db)
+{
+  s_eq_mid_db = (int8_t)eq_clamp_db(db);
+  eq_recompute_coeffs();
+}
+void radio_audio_set_eq_treble(int db)
+{
+  s_eq_treble_db = (int8_t)eq_clamp_db(db);
+  eq_recompute_coeffs();
+}
+int radio_audio_get_eq_bass(void)
+{
+  return s_eq_bass_db;
+}
+int radio_audio_get_eq_mid(void)
+{
+  return s_eq_mid_db;
+}
+int radio_audio_get_eq_treble(void)
+{
+  return s_eq_treble_db;
+}
+
+//-- Applies the 3 cascaded biquads (bass->mid->treble) per channel, stereo
+//-- interleaved int16 in place, then hard-clamps to int16 range as a
+//-- last-resort safety net against any residual overshoot between bands
+//-- (the preamp above handles the common case; this catches the rest).
+static void apply_eq(int16_t* pcm, size_t frame_count)
+{
+  eq_biquad_t coeffs[EQ_BANDS];
+  portENTER_CRITICAL(&s_eq_mux);
+  memcpy(coeffs, s_eq_coeffs, sizeof(coeffs));
+  portEXIT_CRITICAL(&s_eq_mux);
+
+  for (size_t i = 0; i < frame_count; i++)
+  {
+    for (int ch = 0; ch < EQ_CHANNELS; ch++)
+    {
+      float x = (float)pcm[i * EQ_CHANNELS + ch];
+      for (int b = 0; b < EQ_BANDS; b++)
+      {
+        eq_state_t* st = &s_eq_state[ch][b];
+        const eq_biquad_t* c = &coeffs[b];
+        float y = c->b0 * x + st->z1;
+        st->z1 = c->b1 * x - c->a1 * y + st->z2;
+        st->z2 = c->b2 * x - c->a2 * y;
+        x = y;
+      }
+      if (x > 32767.0f)
+        x = 32767.0f;
+      else if (x < -32768.0f)
+        x = -32768.0f;
+      pcm[i * EQ_CHANNELS + ch] = (int16_t)x;
+    }
+  }
 }
 
 static bool session_is_active(uint32_t session_id)
@@ -1122,7 +1340,17 @@ static void stream_task(void* arg)
           ESP_ERROR_CHECK(i2s_channel_reconfig_std_clock(s_tx, &clk));
           ESP_ERROR_CHECK(i2s_channel_enable(s_tx));
           configured = true;
+          //-- New stream: recompute EQ coefficients for its sample rate and
+          //-- reset filter state, so a station switch never carries over
+          //-- stale biquad history from a different sample rate.
+          if (s_eq_sample_rate != (uint32_t)info.sample_rate)
+          {
+            s_eq_sample_rate = (uint32_t)info.sample_rate;
+            eq_recompute_coeffs();
+          }
+          memset(s_eq_state, 0, sizeof(s_eq_state));
         }
+        apply_eq((int16_t*)out, frame.decoded_size / 4);
         apply_volume((int16_t*)out, frame.decoded_size / 2);
 
         //-- The byte stream is entered mid-MP3-frame, so the decoder's
@@ -1216,6 +1444,9 @@ static void audio_task(void* arg)
 
 esp_err_t radio_audio_init(void)
 {
+  //-- Flat (0dB) coefficients so the EQ is a safe no-op even if a station
+  //-- starts playing before app_main applies loaded/default dB values.
+  eq_recompute_coeffs();
   if (RADIO_I2S_ENABLE >= 0)
   {
     gpio_set_direction(RADIO_I2S_ENABLE, GPIO_MODE_OUTPUT);

@@ -8,6 +8,9 @@
 #define NVS_KEY_HOSTNAME_NUM  "host_num"
 #define NVS_KEY_ATTENUATION   "atten"
 #define NVS_KEY_BACKLIGHT_MIN "bl_min"
+#define NVS_KEY_EQ_BASS   "eq_bass"
+#define NVS_KEY_EQ_MID    "eq_mid"
+#define NVS_KEY_EQ_TREBLE "eq_treble"
 
 static const char *TAG = "radio_settings";
 
@@ -121,6 +124,78 @@ esp_err_t radio_settings_save_backlight_minutes(uint8_t value)
 		return err;
 	}
 	err = nvs_set_u8(handle, NVS_KEY_BACKLIGHT_MIN, value);
+	if (err == ESP_OK) err = nvs_commit(handle);
+	nvs_close(handle);
+	return err;
+}
+
+esp_err_t radio_settings_load_eq_bass(int8_t *value)
+{
+	nvs_handle_t handle;
+	esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+	if (err != ESP_OK) return err;
+	err = nvs_get_i8(handle, NVS_KEY_EQ_BASS, value);
+	nvs_close(handle);
+	return err;
+}
+
+esp_err_t radio_settings_save_eq_bass(int8_t value)
+{
+	nvs_handle_t handle;
+	esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+	if (err != ESP_OK) {
+		ESP_LOGE(TAG, "Failed to open NVS (%s)", esp_err_to_name(err));
+		return err;
+	}
+	err = nvs_set_i8(handle, NVS_KEY_EQ_BASS, value);
+	if (err == ESP_OK) err = nvs_commit(handle);
+	nvs_close(handle);
+	return err;
+}
+
+esp_err_t radio_settings_load_eq_mid(int8_t *value)
+{
+	nvs_handle_t handle;
+	esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+	if (err != ESP_OK) return err;
+	err = nvs_get_i8(handle, NVS_KEY_EQ_MID, value);
+	nvs_close(handle);
+	return err;
+}
+
+esp_err_t radio_settings_save_eq_mid(int8_t value)
+{
+	nvs_handle_t handle;
+	esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+	if (err != ESP_OK) {
+		ESP_LOGE(TAG, "Failed to open NVS (%s)", esp_err_to_name(err));
+		return err;
+	}
+	err = nvs_set_i8(handle, NVS_KEY_EQ_MID, value);
+	if (err == ESP_OK) err = nvs_commit(handle);
+	nvs_close(handle);
+	return err;
+}
+
+esp_err_t radio_settings_load_eq_treble(int8_t *value)
+{
+	nvs_handle_t handle;
+	esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+	if (err != ESP_OK) return err;
+	err = nvs_get_i8(handle, NVS_KEY_EQ_TREBLE, value);
+	nvs_close(handle);
+	return err;
+}
+
+esp_err_t radio_settings_save_eq_treble(int8_t value)
+{
+	nvs_handle_t handle;
+	esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+	if (err != ESP_OK) {
+		ESP_LOGE(TAG, "Failed to open NVS (%s)", esp_err_to_name(err));
+		return err;
+	}
+	err = nvs_set_i8(handle, NVS_KEY_EQ_TREBLE, value);
 	if (err == ESP_OK) err = nvs_commit(handle);
 	nvs_close(handle);
 	return err;
