@@ -1,6 +1,8 @@
 # ESP32-S3 Internet Radio
 
-Native ESP-IDF 5.2+ project for VS Code, the TFT-LCD-Display-EC11 piggyback board and a PCM5102A I2S DAC. It uses MichMich's captive-portal Wi-Fi provisioner, LittleFS station storage and Espressif's MP3/AAC decoder.
+Native ESP-IDF 5.2+ project for VS Code, the TFT-LCD-Display-EC11 piggyback board 
+and a PCM5102A I2S DAC. It uses MichMich's captive-portal Wi-Fi provisioner, 
+mrWheels's ota_upload component, LittleFS station storage and Espressif's MP3/AAC decoder.
 
 ## Included behavior
 
@@ -47,9 +49,66 @@ Supported codec values are `mp3` and `aac`. Plain HTTP and HTTPS URLs work; TLS 
 
 ## Hardware defaults
 
-The TFT/EC11/auxiliary pins are copied from `mrWheel/TheGrooveboxProject` `platformio.ini` and live in the `esp32_s3_piggyback` component's own Kconfig: TFT BL/RST/CS/SCLK/MOSI/DC = 2/4/5/12/11/15; EC11 push/A/B = 6/16/17; auxiliary = 1. Display size is 320×240.
+The TFT/EC11/auxiliary pins are copied from `mrWheel/TheGrooveboxProject` `platformio.ini` and live in the `esp32_s3_piggyback` component's own Kconfig: TFT BL/RST/CS/SCLK/MOSI/DC = 2/4/5/12/11/15; EC11 push/A/B = 6/16/17; auxiliary = 1. 
 
-The I2S pins live in `radio_board`'s Kconfig: BCLK/LRCLK/DATA = 38/40/42. The PCM5102A's enable pin is disabled by default (`-1`); set `RADIO_I2S_ENABLE_GPIO` if your board wires one.
+### Display size is 320×240
+
+### Pin assignments
+
+These GPIO pins are determined by the hardware design. If you change them without making the
+corresponding hardware modifications, the Piggyback Board will no longer function correctly.
+
+| System Name                      | GPIO pin |
+|---------------------------|-----|
+| TFT_EC11_PIN_CS | 5
+| TFT_EC11_PIN_DC | 15
+| TFT_EC11_PIN_RST | 4
+| TFT_EC11_PIN_BL | 2
+| TFT_EC11_PIN_SCLK | 12
+| TFT_EC11_PIN_MOSI | 11
+| TFT_EC11_PIN_ENC_A | 16
+| TFT_EC11_PIN_ENC_B | 17
+| TFT_EC11_PIN_ENC_BUTTON | 6
+| TFT_EC11_PIN_AUX_BUTTON | 1
+| I2C_SDA (not used in radioProject) | 8 |
+| I2C_SCL (not used in radioProject) | 9 |
+
+### Other system settings
+| Name | Value |
+|-----------------------------|--------------------|
+| TFT_EC11_SPI_CLOCK_HZ | 40000000 Hz |
+| TFT_EC11_DEFAULT_ROTATION | 3 |
+| TFT_EC11_DEFAULT_INVERT | false |
+| TFT_EC11_BGR | false |
+| TFT_EC11_ENCODER_TRANSITIONS | 4 |
+| TFT_EC11_DEBOUNCE_MS | 30 |
+| TFT_EC11_MEDIUM_MS | 450 |
+| TFT_EC11_LONG_MS | 900 |
+| TFT_AUX_DEBOUNCE_MS | 30 (from EC11_DEBOUNCE) |
+| TFT_AUX_MEDIUM_MS | 450 (from EC11_DEBOUNCE) |
+| TFT_AUX_LONG_MS | 900 (from EC11_DEBOUNCE) |
+
+### I2S settings
+The I2S pins live in `radio_board`'s Kconfig. Below are the default pin configuration. 
+They can be changed in the [System] menu (Long press AUX button). 
+The `PCM5102A's DAC enable` pin is disabled by default (`-1`); set `RADIO_I2S_ENABLE_GPIO` 
+if your board wires one.
+
+The following GPIO pins are available for general use:
+
+**GPIO 10, 38 (input only), 39 (input only), 40, 41, 42, 43, 44, 47, and 48.**
+
+These pins can be assigned to the I2S interface as required, with the exception of GPIO 38 
+and GPIO 39, which can only be used as inputs.
+
+By default, the I2S interface uses the GPIO pins listed below.
+
+| Name | System Name | GPIO pin |
+|---------|----------------|------|
+| PCM5102A BCLK | RADIO_I2S_BCLK_GPIO | 38 |
+| PCM5102A LRCLK | RADIO_I2S_WS_GPIO | 40 |
+| PCM5102A DATA | RADIO_I2S_DOUT_GPIO | 42 |
+| PCM5102A DAC enable | RADIO_I2S_ENABLE_GPIO | -1 |
 
 Change them under `idf.py menuconfig` → **Component config → TFT LCD Display EC11** (display/encoder pins) or **→ Radio hardware** (I2S pins, encoder direction, selection timeout, default volume). Defaults remain fixed when menuconfig is not used.
 
