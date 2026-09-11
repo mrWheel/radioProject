@@ -47,6 +47,7 @@ typedef struct
 {
   char type[24];
   char name[128];
+  char sort_field[16];
   char url[1200];
   char codec[8];
   int value;
@@ -145,6 +146,7 @@ static void web_gui_fill_state(cJSON* data)
   {
     cJSON* station_obj = cJSON_CreateObject();
     cJSON_AddStringToObject(station_obj, "name", station->name);
+    cJSON_AddStringToObject(station_obj, "sortField", station->sort_field);
     cJSON_AddStringToObject(station_obj, "url", station->url);
     cJSON_AddStringToObject(station_obj, "codec",
                             station->codec == RADIO_CODEC_AAC ? "aac" : "mp3");
@@ -152,12 +154,13 @@ static void web_gui_fill_state(cJSON* data)
   }
 }
 
-//-- Fills a radio_station_t from name/url/codec strings, defaulting codec to mp3.
-static void web_gui_build_station(radio_station_t* station, const char* name, const char* url,
-                                  const char* codec)
+//-- Fills a radio_station_t from name/sort_field/url/codec strings, defaulting codec to mp3.
+static void web_gui_build_station(radio_station_t* station, const char* name,
+                                  const char* sort_field, const char* url, const char* codec)
 {
   memset(station, 0, sizeof(*station));
   strlcpy(station->name, name ? name : "", sizeof(station->name));
+  strlcpy(station->sort_field, sort_field ? sort_field : "", sizeof(station->sort_field));
   strlcpy(station->url, url ? url : "", sizeof(station->url));
   station->codec = (codec && strcasecmp(codec, "aac") == 0) ? RADIO_CODEC_AAC : RADIO_CODEC_MP3;
 }
@@ -165,8 +168,9 @@ static void web_gui_build_station(radio_station_t* station, const char* name, co
 //-- Shared by the HTTP /api/command handler and the WebSocket worker task so both
 //-- transports apply commands identically. Must only be called outside of the
 //-- WebSocket receive callback, since it performs blocking station/filesystem work.
-static void web_gui_apply_command(const char* type, const char* name, const char* url,
-                                  const char* codec, int value, cJSON* root, cJSON* response_data)
+static void web_gui_apply_command(const char* type, const char* name, const char* sort_field,
+                                  const char* url, const char* codec, int value, cJSON* root,
+                                  cJSON* response_data)
 {
   cJSON_AddStringToObject(root, "type", "ack");
 
@@ -259,10 +263,20 @@ static void web_gui_apply_command(const char* type, const char* name, const char
     else
     {
       radio_station_t station;
-      web_gui_build_station(&station, name, url, codec);
+      web_gui_build_station(&station, name, sort_field, url, codec);
       if (station_store_add(&station) && station_store_save() == ESP_OK)
       {
-        s_current_station_index = web_gui_station_index(station_store_count() - 1);
+        size_t new_idx = 0;
+        for (size_t i = 0; i < station_store_count(); ++i)
+        {
+          const radio_station_t* st = station_store_get(i);
+          if (st && strcmp(st->name, station.name) == 0 && strcmp(st->url, station.url) == 0)
+          {
+            new_idx = i;
+            break;
+          }
+        }
+        s_current_station_index = new_idx;
         cJSON_ReplaceItemInObject(root, "type", cJSON_CreateString("state"));
         web_gui_fill_state(response_data);
       }
@@ -283,10 +297,21 @@ static void web_gui_apply_command(const char* type, const char* name, const char
     else
     {
       radio_station_t station;
-      web_gui_build_station(&station, name, url, codec);
+      web_gui_build_station(&station, name, sort_field, url, codec);
       size_t index = web_gui_station_index(s_current_station_index);
       if (station_store_edit(index, &station) && station_store_save() == ESP_OK)
       {
+        size_t new_idx = 0;
+        for (size_t i = 0; i < station_store_count(); ++i)
+        {
+          const radio_station_t* st = station_store_get(i);
+          if (st && strcmp(st->name, station.name) == 0 && strcmp(st->url, station.url) == 0)
+          {
+            new_idx = i;
+            break;
+          }
+        }
+        s_current_station_index = new_idx;
         cJSON_ReplaceItemInObject(root, "type", cJSON_CreateString("state"));
         web_gui_fill_state(response_data);
       }
@@ -365,17 +390,21 @@ static esp_err_t web_gui_handle_command(httpd_req_t* req)
 
   const char* type = (type_obj && cJSON_IsString(type_obj)) ? type_obj->valuestring : "";
   const char* name = NULL;
+  const char* sort_field = NULL;
   const char* url = NULL;
   const char* codec = NULL;
   int value = 0;
   if (data)
   {
     cJSON* name_obj = cJSON_GetObjectItemCaseSensitive(data, "name");
+    cJSON* sort_field_obj = cJSON_GetObjectItemCaseSensitive(data, "sortField");
     cJSON* url_obj = cJSON_GetObjectItemCaseSensitive(data, "url");
     cJSON* codec_obj = cJSON_GetObjectItemCaseSensitive(data, "codec");
     cJSON* value_obj = cJSON_GetObjectItemCaseSensitive(data, "value");
     if (name_obj && cJSON_IsString(name_obj))
       name = name_obj->valuestring;
+    if (sort_field_obj && cJSON_IsString(sort_field_obj))
+      sort_field = sort_field_obj->valuestring;
     if (url_obj && cJSON_IsString(url_obj))
       url = url_obj->valuestring;
     if (codec_obj && cJSON_IsString(codec_obj))
@@ -383,7 +412,7 @@ static esp_err_t web_gui_handle_command(httpd_req_t* req)
     if (value_obj && cJSON_IsNumber(value_obj))
       value = value_obj->valueint;
   }
-  web_gui_apply_command(type, name, url, codec, value, root, response_data);
+  web_gui_apply_command(type, name, sort_field, url, codec, value, root, response_data);
 
   esp_err_t err = web_gui_response_json(req, root);
   cJSON_Delete(msg);
@@ -518,39 +547,62 @@ static void web_gui_buffer_ticker_task(void* arg)
   }
 }
 
-//-- Serves the raw stations.json file as a browser download (Manage Stations'
-//-- "Download Stations" button), separate from web_gui_serve_file() since it
-//-- needs Content-Disposition instead of a page content type.
+//-- Serves stations.json as a browser download (Manage Stations' "Download
+//-- Stations" button), separate from web_gui_serve_file() since it needs
+//-- Content-Disposition instead of a page content type. Built from the live,
+//-- already-sorted in-memory station list (station_store_get(), sorted by
+//-- station_store_sort() on load/add/edit/import) rather than dumped
+//-- straight from disk: the on-disk file only gets re-sorted the next time
+//-- station_store_save() runs, so a raw file read could still reflect a
+//-- stale/unsorted order (e.g. right after boot, before any edit).
 static esp_err_t stations_export_get_handler(httpd_req_t* req)
 {
-  char path[160];
-  snprintf(path, sizeof(path), "%s/stations.json", RADIO_STORAGE_PATH);
-
-  FILE* f = fopen(path, "r");
-  if (!f)
+  cJSON* root = cJSON_CreateObject();
+  if (!root)
   {
-    ESP_LOGW(TAG, "stations.json not found for export: %s", path);
-    return httpd_resp_send_404(req);
+    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+  }
+  cJSON_AddNumberToObject(root, "version", 1);
+  cJSON* array = cJSON_CreateArray();
+  if (!array)
+  {
+    cJSON_Delete(root);
+    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+  }
+  cJSON_AddItemToObject(root, "stations", array);
+
+  size_t count = station_store_count();
+  for (size_t i = 0; i < count; ++i)
+  {
+    const radio_station_t* station = station_store_get(i);
+    if (!station)
+    {
+      continue;
+    }
+    cJSON* item = cJSON_CreateObject();
+    if (!item)
+    {
+      cJSON_Delete(root);
+      return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+    }
+    cJSON_AddStringToObject(item, "name", station->name);
+    cJSON_AddStringToObject(item, "sortField", station->sort_field);
+    cJSON_AddStringToObject(item, "url", station->url);
+    cJSON_AddStringToObject(item, "codec", station->codec == RADIO_CODEC_AAC ? "aac" : "mp3");
+    cJSON_AddItemToArray(array, item);
+  }
+
+  char* buf = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  if (!buf)
+  {
+    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
   }
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"stations.json\"");
-  char chunk[1024];
-  size_t read_len;
-  esp_err_t err = ESP_OK;
-  while ((read_len = fread(chunk, 1, sizeof(chunk), f)) > 0)
-  {
-    err = httpd_resp_send_chunk(req, chunk, read_len);
-    if (err != ESP_OK)
-    {
-      break;
-    }
-  }
-  fclose(f);
-  if (err == ESP_OK)
-  {
-    err = httpd_resp_send_chunk(req, NULL, 0);
-  }
+  esp_err_t err = httpd_resp_send(req, buf, strlen(buf));
+  free(buf);
   return err;
 }
 
@@ -651,7 +703,9 @@ static void web_gui_ws_worker_task(void* arg)
     cJSON* root = cJSON_CreateObject();
     cJSON* response_data = cJSON_CreateObject();
     cJSON_AddItemToObject(root, "data", response_data);
-    web_gui_apply_command(cmd.type, cmd.name[0] ? cmd.name : NULL, cmd.url[0] ? cmd.url : NULL,
+    web_gui_apply_command(cmd.type, cmd.name[0] ? cmd.name : NULL,
+                          cmd.sort_field[0] ? cmd.sort_field : NULL,
+                          cmd.url[0] ? cmd.url : NULL,
                           cmd.codec[0] ? cmd.codec : NULL, cmd.value, root, response_data);
     web_gui_ws_broadcast(root);
     cJSON_Delete(root);
@@ -845,11 +899,14 @@ static esp_err_t ws_handler(httpd_req_t* req)
   if (data)
   {
     cJSON* name_obj = cJSON_GetObjectItemCaseSensitive(data, "name");
+    cJSON* sort_field_obj = cJSON_GetObjectItemCaseSensitive(data, "sortField");
     cJSON* url_obj = cJSON_GetObjectItemCaseSensitive(data, "url");
     cJSON* codec_obj = cJSON_GetObjectItemCaseSensitive(data, "codec");
     cJSON* value_obj = cJSON_GetObjectItemCaseSensitive(data, "value");
     if (name_obj && cJSON_IsString(name_obj))
       strlcpy(cmd.name, name_obj->valuestring, sizeof(cmd.name));
+    if (sort_field_obj && cJSON_IsString(sort_field_obj))
+      strlcpy(cmd.sort_field, sort_field_obj->valuestring, sizeof(cmd.sort_field));
     if (url_obj && cJSON_IsString(url_obj))
       strlcpy(cmd.url, url_obj->valuestring, sizeof(cmd.url));
     if (codec_obj && cJSON_IsString(codec_obj))

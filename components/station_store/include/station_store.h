@@ -3,6 +3,7 @@
 #include "esp_err.h"
 #define RADIO_MAX_STATIONS 64
 #define RADIO_NAME_MAX 64
+#define RADIO_SORT_FIELD_MAX 6
 #define RADIO_URL_MAX 256
 typedef enum
 {
@@ -12,6 +13,7 @@ typedef enum
 typedef struct
 {
   char name[RADIO_NAME_MAX];
+  char sort_field[RADIO_SORT_FIELD_MAX];
   char url[RADIO_URL_MAX];
   radio_codec_t codec;
 } radio_station_t;
@@ -27,6 +29,7 @@ esp_err_t station_store_save(void);
 //-- overwritten: if the document is malformed or contains zero valid stations,
 //-- both the file on disk and the current in-memory list are left untouched.
 esp_err_t station_store_import(const char* json_text);
+void station_store_sort(void);
 size_t station_store_count(void);
 const radio_station_t* station_store_get(size_t index);
 bool station_store_valid(const radio_station_t* station);

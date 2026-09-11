@@ -1,183 +1,297 @@
 {
-  "version": 1,
   "stations": [
     {
       "name": "Jazz24",
+      "sortField": "JZZ01",
       "url": "https://knkx-live-a.edge.audiocdn.com/6285_128k",
       "codec": "mp3"
     },
     {
       "name": "Radio Swiss Jazz",
+      "sortField": "JZZ",
       "url": "http://distribution.srg-ssr.ch/m/rsj/mp3_128",
       "codec": "mp3"
     },
     {
-      "name": "Groove Salad SomaFM",
+      "name": "Groove Salad - SomaFM",
+      "sortField": "DNC",
       "url": "https://ice2.somafm.com/groovesalad-128-mp3",
       "codec": "mp3"
     },
     {
       "name": "WDCB Jazz",
+      "sortField": "JZZ",
       "url": "https://wdcb-ice.streamguys1.com/wdcb128",
       "codec": "mp3"
     },
     {
       "name": "WWOZ New Orleans",
+      "sortField": "JZZ03",
       "url": "https://wwoz-sc.streamguys1.com/wwoz-hi.mp3",
       "codec": "mp3"
     },
     {
       "name": "KCSM Jazz 91",
+      "sortField": "JZZ",
       "url": "http://ice7.securenetsystems.net/KCSM2",
       "codec": "mp3"
     },
     {
       "name": "Jazz London Radio",
+      "sortField": "JZZ05",
       "url": "https://radio.canstream.co.uk:8075/live.mp3",
       "codec": "mp3"
     },
     {
-      "name": "113.FM Bluesville",
+      "name": "Bluesville - 113.FM",
+      "sortField": "BLS",
       "url": "https://113fm-atunwadigital.streamguys1.com/1005",
       "codec": "mp3"
     },
     {
-      "name": "113.FM Jazzy",
+      "name": "Jazzy - 113.FM",
+      "sortField": "JZZ07",
       "url": "https://113fm-atunwadigital.streamguys1.com/1067",
       "codec": "mp3"
     },
     {
       "name": "Aardvark Blues FM",
-      "url": "https://streaming.live365.com/b77280_128mp3",
+      "sortField": "BLS01",
+      "url": "https://ais-sa5.cdnstream1.com/b77280_128mp3",
       "codec": "mp3"
     },
     {
-      "name": "181.FM True Blues",
+      "name": "True Blues - 181.FM",
+      "sortField": "BLS",
       "url": "https://listen.181fm.com/181-blues_128k.mp3",
       "codec": "mp3"
     },
     {
-      "name": "181.FM BeBop Jazz",
+      "name": "BeBop Jazz - 181.FM",
+      "sortField": "JZZ10",
       "url": "https://listen.181fm.com/181-bebop_128k.mp3",
       "codec": "mp3"
     },
     {
-      "name": "181.FM Vocal Jazz",
+      "name": "Vocal Jazz - 181.FM",
+      "sortField": "JZZ11",
       "url": "https://listen.181fm.com/181-vocals_128k.mp3",
       "codec": "mp3"
-    },   {
-      "name": "Secret Agent SomaFM",
+    },
+    {
+      "name": "Secret Agent - SomaFM",
+      "sortField": "JZZ",
       "url": "https://ice2.somafm.com/secretagent-128-mp3",
       "codec": "mp3"
     },
     {
-      "name": "Sonic Universe SomaFM",
+      "name": "Sonic Universe - SomaFM",
+      "sortField": "JZZ",
       "url": "https://ice5.somafm.com/sonicuniverse-128-mp3",
       "codec": "mp3"
     },
     {
-      "name": "Left Coast 70s SomaFM",
+      "name": "Left Coast 70s - SomaFM",
+      "sortField": "OLD",
       "url": "https://ice5.somafm.com/seventies-128-mp3",
       "codec": "mp3"
     },
     {
       "name": "Classic Rock California",
+      "sortField": "RCK",
       "url": "https://broadcast.shoutstream.co.uk:8014/stream",
       "codec": "mp3"
     },
     {
       "name": "NPO Radio 1",
       "url": "https://icecast.omroep.nl/radio1-bb-mp3",
-      "codec": "mp3"
+      "codec": "mp3",
+      "sortField": "NWS01"
     },
     {
       "name": "NPO Radio 2",
+      "sortField": "POP02",
       "url": "https://icecast.omroep.nl/radio2-bb-mp3",
       "codec": "mp3"
     },
     {
       "name": "NPO 3FM",
+      "sortField": "POP03",
       "url": "https://icecast.omroep.nl/3fm-bb-mp3",
       "codec": "mp3"
     },
     {
       "name": "NPO Klassiek",
+      "sortField": "KLS01",
       "url": "https://icecast.omroep.nl/npoklassiek-bb-mp3",
       "codec": "mp3"
     },
     {
-      "name": "NPO Radio 6",
-      "url": "https://icecast.omroep.nl/radio6-bb-aac",
-      "codec": "aac"
-    },
-    {
       "name": "NPO Radio 5",
+      "sortField": "OLD05",
       "url": "https://icecast.omroep.nl/radio5-bb-mp3",
       "codec": "mp3"
     },
     {
       "name": "NPO FunX",
+      "sortField": "URB",
       "url": "https://icecast.omroep.nl/funx-bb-mp3",
       "codec": "mp3"
     },
     {
       "name": "Qmusic",
+      "sortField": "POP09",
       "url": "https://stream.qmusic.nl/qmusic/mp3",
       "codec": "mp3"
     },
     {
       "name": "538 Non-Stop",
+      "sortField": "POP01",
       "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/TLPSTR09.mp3",
       "codec": "mp3"
-    },    
+    },
     {
       "name": "Radio 538",
+      "sortField": "POP09",
       "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/RADIO538.mp3",
       "codec": "mp3"
     },
     {
       "name": "Sky Radio",
+      "sortField": "POP09",
       "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/SKYRADIO.mp3",
       "codec": "mp3"
     },
     {
       "name": "Radio 10",
+      "sortField": "OLD",
       "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/RADIO10.mp3",
       "codec": "mp3"
     },
     {
       "name": "Radio 10 60s & 70s Hits",
+      "sortField": "OLD",
       "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/TLPSTR18.mp3",
       "codec": "mp3"
     },
     {
       "name": "GOUD RADIO",
+      "sortField": "OLD",
       "url": "https://luister.goudradio.nl",
       "codec": "mp3"
     },
     {
       "name": "Radio Veronica",
+      "sortField": "RCK",
       "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/VERONICA.mp3",
       "codec": "mp3"
     },
     {
       "name": "100% NL",
+      "sortField": "NLD",
       "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/100PNL_MP3.mp3",
       "codec": "mp3"
     },
     {
       "name": "SLAM!",
+      "sortField": "DNC",
       "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/SLAM_MP3.mp3",
       "codec": "mp3"
     },
     {
       "name": "BNR Nieuwsradio",
+      "sortField": "NWS",
       "url": "https://stream.bnr.nl/bnr_mp3_128_20",
       "codec": "mp3"
     },
     {
       "name": "JOE",
+      "sortField": "OLD",
       "url": "https://stream.joe.nl/joe/mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "Radio Paradise – Main Mix",
+      "sortField": "RCK",
+      "url": "http://stream-uk1.radioparadise.com/mp3-128",
+      "codec": "mp3"
+    },
+    {
+      "name": "Paradise Tunes – Classic Rock",
+      "sortField": "RCK",
+      "url": "https://s2.free-shoutcast.com/stream/18102/",
+      "codec": "mp3"
+    },
+    {
+      "name": "QMusic Non-Stop",
+      "sortField": "POP01",
+      "url": "https://stream.qmusic.nl/nonstop/aac",
+      "codec": "aac"
+    },
+    {
+      "name": "Radio Swiss Classic",
+      "sortField": "KLS",
+      "url": "https://stream.srg-ssr.ch/srgssr/rsc_de/mp3/128",
+      "codec": "mp3"
+    },
+    {
+      "name": "Venice Classic Radio",
+      "sortField": "KLS",
+      "url": "https://de2.streamingpulse.com/ssl/vcr1",
+      "codec": "mp3"
+    },
+    {
+      "name": "Bach - Klassik Radio",
+      "sortField": "KLS",
+      "url": "https://stream.klassikradio.de/purebach/mp3-128",
+      "codec": "mp3"
+    },
+    {
+      "name": "Chopin - Radio Clasic",
+      "sortField": "KLS",
+      "url": "https://live.radioclasic.com/listen/radio_clasic_chopin/live.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "Mozart - Klassik Radio",
+      "sortField": "KLS",
+      "url": "https://stream.klassikradio.de/mozart/mp3-128",
+      "codec": "mp3"
+    },
+    {
+      "name": "Beethoven - Klassik Radio",
+      "sortField": "KLS",
+      "url": "https://stream.klassikradio.de/beethoven/mp3-128",
+      "codec": "mp3"
+    },
+    {
+      "name": "Vivaldi - Radio Clasic",
+      "sortField": "KLS",
+      "url": "https://live.radioclasic.com/listen/radio_clasic_vivaldi/live.mp3",
+      "codec": "mp3"
+    },
+    {
+      "name": "Schubert - Onlineradio",
+      "sortField": "KLS",
+      "url": "https://stream.0nlineradio.com/schubert",
+      "codec": "mp3"
+    },
+    {
+      "name": "Blues Rock - Star FM",
+      "sortField": "BLS",
+      "url": "https://stream.starfm.de/blues/mp3-128/stream.starfm.de/",
+      "codec": "mp3"
+    },
+    {
+      "name": "BluesRadio - MRG.fm",
+      "sortField": "BLS",
+      "url": "https://str3.openstream.co/1833",
+      "codec": "mp3"
+    },
+    {
+      "name": "Blues - Radio BOB!",
+      "sortField": "BLS",
+      "url": "https://streams.radiobob.de/blues/mp3-128/streams.radiobob.de/",
       "codec": "mp3"
     }
   ]

@@ -206,14 +206,25 @@ function applyState(data) {
   if (manageMode === 'view') { fillManageFormFromCurrentStation(); }
 }
 
+function sanitizeSortField(val)
+{
+  if (!val)
+  {
+    return '';
+  }
+  return val.replace(/["\\\x00-\x1f\x7f]/g, '').slice(0, 5);
+}
+
 function fillManageFormFromCurrentStation() {
   document.getElementById('stationNameInput').value = state.station ? state.station.name : '';
+  document.getElementById('stationSortFieldInput').value = state.station && state.station.sortField ? state.station.sortField : '';
   document.getElementById('stationUrlInput').value = state.station ? state.station.url : '';
   document.getElementById('stationCodecInput').value = state.station && state.station.codec ? state.station.codec : 'mp3';
 }
 
 function setManageFieldsEnabled(enabled) {
   document.getElementById('stationNameInput').disabled = !enabled;
+  document.getElementById('stationSortFieldInput').disabled = !enabled;
   document.getElementById('stationUrlInput').disabled = !enabled;
   document.getElementById('stationCodecInput').disabled = !enabled;
 }
@@ -268,7 +279,7 @@ document.getElementById('pauseBtn').addEventListener('click', (e) => send('pause
 document.getElementById('manageBtn').addEventListener('click', (e) => { markPressed(e.currentTarget); resolvePending(); fillManageFormFromCurrentStation(); setManageMode('view'); document.getElementById('stationModal').classList.add('open'); });
 document.getElementById('closeStationBtn').addEventListener('click', () => document.getElementById('stationModal').classList.remove('open'));
 document.getElementById('editStationBtn').addEventListener('click', (e) => { markPressed(e.currentTarget); resolvePending(); fillManageFormFromCurrentStation(); setManageMode('edit'); });
-document.getElementById('newStationBtn').addEventListener('click', (e) => { markPressed(e.currentTarget); resolvePending(); document.getElementById('stationNameInput').value = ''; document.getElementById('stationUrlInput').value = ''; document.getElementById('stationCodecInput').value = 'mp3'; setManageMode('new'); });
+document.getElementById('newStationBtn').addEventListener('click', (e) => { markPressed(e.currentTarget); resolvePending(); document.getElementById('stationNameInput').value = ''; document.getElementById('stationSortFieldInput').value = ''; document.getElementById('stationUrlInput').value = ''; document.getElementById('stationCodecInput').value = 'mp3'; setManageMode('new'); });
 document.getElementById('cancelStationBtn').addEventListener('click', (e) => { markPressed(e.currentTarget); resolvePending(); fillManageFormFromCurrentStation(); setManageMode('view'); });
 document.getElementById('deleteStationBtn').addEventListener('click', (e) => {
   if (!state.station) return;
@@ -276,12 +287,16 @@ document.getElementById('deleteStationBtn').addEventListener('click', (e) => {
   send('stationDelete', null, e.currentTarget);
   document.getElementById('stationModal').classList.remove('open');
 });
+document.getElementById('stationSortFieldInput').addEventListener('input', (event) => {
+  event.target.value = sanitizeSortField(event.target.value);
+});
 document.getElementById('saveStationBtn').addEventListener('click', (e) => {
   const name = document.getElementById('stationNameInput').value.trim();
+  const sortField = sanitizeSortField(document.getElementById('stationSortFieldInput').value.trim());
   const url = document.getElementById('stationUrlInput').value.trim();
   const codec = document.getElementById('stationCodecInput').value;
   if (!name || !url) { setStatus('Name and URL are required'); return; }
-  send(manageMode === 'new' ? 'stationAdd' : 'stationEdit', { name, url, codec }, e.currentTarget);
+  send(manageMode === 'new' ? 'stationAdd' : 'stationEdit', { name, sortField, url, codec }, e.currentTarget);
   setManageMode('view');
   document.getElementById('stationModal').classList.remove('open');
 });

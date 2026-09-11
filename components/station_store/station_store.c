@@ -31,6 +31,66 @@ static void station_store_trim(char* dst, size_t dst_size, const char* src)
   }
 }
 
+//-- Trims and sanitizes sort_field: max 5 characters, removes JSON-breaking characters
+//-- (double quotes, backslashes, and control characters).
+//-- If missing, empty, or "-", defaults to "ZZZZZ" so it is sorted at the very end.
+static void station_store_sanitize_sort_field(char* dst, size_t dst_size, const char* src)
+{
+  if (!dst || dst_size == 0)
+  {
+    return;
+  }
+  if (!src)
+  {
+    strlcpy(dst, "ZZZZZ", dst_size);
+    return;
+  }
+  size_t out_len = 0;
+  for (size_t i = 0; src[i] != '\0' && out_len + 1 < dst_size && out_len < 5; ++i)
+  {
+    unsigned char c = (unsigned char)src[i];
+    if (c == '"' || c == '\\' || c < 32 || c == 127)
+    {
+      continue;
+    }
+    dst[out_len++] = (char)c;
+  }
+  dst[out_len] = '\0';
+  while (out_len > 0 && (dst[out_len - 1] == ' ' || dst[out_len - 1] == '\t'))
+  {
+    dst[--out_len] = '\0';
+  }
+  if (dst[0] == '\0' || strcmp(dst, "-") == 0)
+  {
+    strlcpy(dst, "ZZZZZ", dst_size);
+  }
+}
+
+//-- Compares two station entries on concatenated "sortField" + "name" (case-insensitive).
+static int station_compare(const void* a, const void* b)
+{
+  const radio_station_t* sa = (const radio_station_t*)a;
+  const radio_station_t* sb = (const radio_station_t*)b;
+  char key_a[sizeof(sa->sort_field) + sizeof(sa->name)];
+  char key_b[sizeof(sb->sort_field) + sizeof(sb->name)];
+  snprintf(key_a, sizeof(key_a), "%s%s", sa->sort_field, sa->name);
+  snprintf(key_b, sizeof(key_b), "%s%s", sb->sort_field, sb->name);
+  return strcasecmp(key_a, key_b);
+}
+
+static void station_store_sort_array(radio_station_t* array, size_t count)
+{
+  if (array && count > 1)
+  {
+    qsort(array, count, sizeof(radio_station_t), station_compare);
+  }
+}
+
+void station_store_sort(void)
+{
+  station_store_sort_array(s_stations, s_count);
+}
+
 bool station_store_valid(const radio_station_t* station)
 {
   if (!station)
@@ -59,12 +119,17 @@ static size_t station_store_parse_json(const cJSON* root, radio_station_t* out, 
   cJSON_ArrayForEach(item, array)
   {
     cJSON* name = cJSON_GetObjectItemCaseSensitive(item, "name");
+    cJSON* sort_field = cJSON_GetObjectItemCaseSensitive(item, "sortField");
     cJSON* url = cJSON_GetObjectItemCaseSensitive(item, "url");
     cJSON* codec = cJSON_GetObjectItemCaseSensitive(item, "codec");
     if (count >= max_out || !cJSON_IsString(name) || !cJSON_IsString(url))
       continue;
 
     station_store_trim(out[count].name, sizeof(out[count].name), name->valuestring);
+    station_store_sanitize_sort_field(out[count].sort_field, sizeof(out[count].sort_field),
+                                      (cJSON_IsString(sort_field) && sort_field->valuestring)
+                                          ? sort_field->valuestring
+                                          : NULL);
     station_store_trim(out[count].url, sizeof(out[count].url), url->valuestring);
     out[count].codec = (cJSON_IsString(codec) && !strcasecmp(codec->valuestring, "aac"))
                            ? RADIO_CODEC_AAC
@@ -156,6 +221,7 @@ esp_err_t station_store_load(char* err_msg, size_t err_msg_size)
       snprintf(err_msg, err_msg_size, "No valid stations found in stations.json");
     return ESP_ERR_NOT_FOUND;
   }
+  station_store_sort();
   return ESP_OK;
 }
 
@@ -184,6 +250,7 @@ esp_err_t station_store_import(const char* json_text)
     free(scratch);
     return ESP_ERR_NOT_FOUND;
   }
+  station_store_sort_array(scratch, scratch_count);
 
   //-- Only persist/apply once the uploaded document is known to contain at
   //-- least one valid station, so a malformed upload can never wipe out the
@@ -223,6 +290,8 @@ esp_err_t station_store_import(const char* json_text)
 
 esp_err_t station_store_save(void)
 {
+  station_store_sort();
+
   char path[64];
   snprintf(path, sizeof(path), "%s/stations.json", RADIO_STORAGE_PATH);
   char tmp_path[96];
@@ -231,6 +300,7 @@ esp_err_t station_store_save(void)
   cJSON* root = cJSON_CreateObject();
   if (!root)
     return ESP_ERR_NO_MEM;
+  cJSON_AddNumberToObject(root, "version", 1);
   cJSON* array = cJSON_CreateArray();
   if (!array)
   {
@@ -247,6 +317,7 @@ esp_err_t station_store_save(void)
       return ESP_ERR_NO_MEM;
     }
     cJSON_AddStringToObject(item, "name", s_stations[i].name);
+    cJSON_AddStringToObject(item, "sortField", s_stations[i].sort_field);
     cJSON_AddStringToObject(item, "url", s_stations[i].url);
     cJSON_AddStringToObject(item, "codec", s_stations[i].codec == RADIO_CODEC_AAC ? "aac" : "mp3");
     cJSON_AddItemToArray(array, item);
@@ -294,7 +365,12 @@ bool station_store_add(const radio_station_t* station)
 {
   if (!station || !station_store_valid(station) || s_count >= RADIO_MAX_STATIONS)
     return false;
-  s_stations[s_count++] = *station;
+  s_stations[s_count] = *station;
+  station_store_sanitize_sort_field(s_stations[s_count].sort_field,
+                                    sizeof(s_stations[s_count].sort_field),
+                                    station->sort_field);
+  s_count++;
+  station_store_sort();
   return true;
 }
 
@@ -303,6 +379,10 @@ bool station_store_edit(size_t index, const radio_station_t* station)
   if (!station || !station_store_valid(station) || index >= s_count)
     return false;
   s_stations[index] = *station;
+  station_store_sanitize_sort_field(s_stations[index].sort_field,
+                                    sizeof(s_stations[index].sort_field),
+                                    station->sort_field);
+  station_store_sort();
   return true;
 }
 
