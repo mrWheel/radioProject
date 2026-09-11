@@ -86,7 +86,7 @@ python -m pip install -e ./host_tools
 then a build can be uploaded with:
 
 ```sh
-idf.py ota --host radioproject.local
+idf.py ota --host radioproject.local { --timeout 30 }
 ```
 
 ### Option 2 — raw wire protocol (always available)

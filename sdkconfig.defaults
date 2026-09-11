@@ -34,6 +34,7 @@ CONFIG_WIFI_PROV_AP_SSID="Internet-Radio-Setup"
 CONFIG_WIFI_PROV_AP_PASSWORD=""
 CONFIG_WIFI_PROV_PORTAL_TIMEOUT=0
 CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_OTA_UPLOAD_TASK_STACK_SIZE=16384
 #-- Shared system-wide with radio_audio's own streaming HTTP socket; the
 #-- default of 10 could be exhausted just by one browser's page load (5
 #-- concurrent httpd connections) plus the audio stream, starving new
