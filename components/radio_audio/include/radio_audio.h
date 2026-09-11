@@ -12,6 +12,7 @@ typedef void (*radio_audio_stall_cb_t)(bool stalled, void* ctx);
 void radio_audio_set_i2s_pins(int bclk_gpio, int ws_gpio, int dout_gpio, int enable_gpio);
 esp_err_t radio_audio_init(void);
 esp_err_t radio_audio_play(const radio_station_t* station);
+esp_err_t radio_audio_prepare_for_ota(void);
 void radio_audio_set_volume(int percent);
 int radio_audio_get_volume(void);
 //-- Output attenuation in dB (-24..0, default -6) applied on top of the

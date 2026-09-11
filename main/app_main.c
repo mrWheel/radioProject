@@ -409,6 +409,12 @@ static void stall_cb(bool stalled, void* ctx)
   web_gui_notify_title("Stream stalled", "-", "-");
 }
 
+static esp_err_t prepare_ota_cb(void* ctx)
+{
+  (void)ctx;
+  return radio_audio_prepare_for_ota();
+}
+
 //-- Fired by web_gui after a browser-issued command actually changed the
 //-- playing station or volume, so the physical UI's own tracking (and the
 //-- TFT) don't go stale when the change came from the web GUI instead of
@@ -959,6 +965,8 @@ void app_main(void)
     //-- event has been handled), so mDNS advertisement can succeed.
     ota_upload_config_t ota_cfg = OTA_UPLOAD_CONFIG_DEFAULT();
     ota_cfg.hostname = s_mdns_hostname;
+    ota_cfg.prepare_cb = prepare_ota_cb;
+    ota_cfg.prepare_ctx = NULL;
     ESP_ERROR_CHECK(ota_upload_start(&ota_cfg));
   }
   xTaskCreate(ui_task, "radio_ui", 4096, NULL, 6, NULL);

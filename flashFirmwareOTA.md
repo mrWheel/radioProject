@@ -49,6 +49,13 @@ The mDNS hostname used is `radioproject` (i.e. the device answers to
 `radioproject.local`), matching the hostname this project already advertises
 for the web GUI.
 
+Before receiving the image, this project invokes an OTA preparation callback
+that stops the network fetch and audio decode tasks. This keeps the CPU 1 idle
+task schedulable while `esp_ota_end()` validates the image, avoiding the
+previous Task Watchdog warning caused by `radio_stream` running during OTA.
+The audio stream remains stopped until the device reboots; a successful OTA
+still ends with the normal automatic reboot.
+
 ## Building a new firmware image
 
 Build as usual; do **not** flash yet:
@@ -86,7 +93,7 @@ python -m pip install -e ./host_tools
 then a build can be uploaded with:
 
 ```sh
-idf.py ota --host radioproject.local { --timeout 30 }
+idf.py ota --host radioproject.local --timeout 120
 ```
 
 ### Option 2 — raw wire protocol (always available)
@@ -101,6 +108,9 @@ can perform the upload. The protocol is:
    size as an unsigned 32-bit **big-endian** integer.
 3. Send the firmware bytes (`build/radioProject.bin`) immediately after.
 4. Read one newline-terminated ASCII status line back, e.g. `OK rebooting`.
+
+If the application cannot stop its audio stream before OTA, the device returns
+`ERR prepare` and does not select the new image as the boot partition.
 
 A minimal Python script for this (save as e.g. `tools/ota_upload.py` and run
 manually — it is never invoked automatically):
@@ -127,7 +137,7 @@ def main():
     with socket.create_connection((host, port), timeout=10) as sock:
         sock.sendall(header)
         sock.sendall(firmware)
-        sock.settimeout(30)
+      sock.settimeout(120)
         response = sock.makefile("rb").readline().decode().strip()
         print(response)
         if not response.startswith("OK"):
@@ -142,8 +152,6 @@ Usage:
 ```sh
 python3 tools/ota_upload.py radioproject.local build/radioProject.bin
 ```
-
-## Result
 
 On a successful upload the device validates and marks the new OTA slot
 bootable, prints `OK rebooting` back to the uploader, and (with

@@ -40,6 +40,8 @@ static const char* TAG_BUFFER = "RADIO_BUFFER";
 //-- directly (~32s of buffering at 128kbps; board has 8MB PSRAM / N4R8)
 #define STREAM_BUF_CAPACITY (512 * 1024)
 #define FETCH_CHUNK_SIZE 4096
+//-- OTA preparation must not wait forever for a network read or task exit.
+#define OTA_PREPARE_TIMEOUT_MS 15000
 //-- Buffer/HTTP-read diagnostics are summarized on this interval instead of
 //-- per-chunk, so normal playback doesn't flood the monitor
 #define BUF_LOG_INTERVAL_US (5 * 1000 * 1000)
@@ -66,6 +68,7 @@ static volatile size_t s_buf_min_fill = SIZE_MAX;
 static uint64_t s_buf_last_log_us = 0;
 static volatile int s_icy_br_kbps = -1;
 static volatile bool s_reconnect_requested = false;
+static volatile bool s_ota_preparing = false;
 //-- Ring buffer must hold at least this many bytes before stream_task starts
 //-- decoding, so a brief network stall right after connecting doesn't
 //-- immediately starve playback (see AUDIO_BUFFER UNDERRUN diagnostics).
@@ -878,7 +881,14 @@ static void fetch_task(void* arg)
   audio_session_t session = *(audio_session_t*)arg;
   free(arg);
   if (!session_is_active(session.session_id))
+  {
+    if (s_fetch_task == xTaskGetCurrentTaskHandle())
+    {
+      s_fetch_running = false;
+      s_fetch_task = NULL;
+    }
     vTaskDelete(NULL);
+  }
   radio_station_t station = session.station;
   bool first_payload_logged = false;
   uint64_t start_us = esp_timer_get_time();
@@ -1188,7 +1198,7 @@ done:
   //-- Station .." or last-known artist/track on screen forever.
   if (!s_stop_requested && session_is_active(session.session_id) && s_stall_cb)
     s_stall_cb(true, s_stall_ctx);
-  if (session_is_active(session.session_id))
+  if (s_fetch_task == xTaskGetCurrentTaskHandle())
   {
     s_fetch_running = false;
     s_fetch_task = NULL;
@@ -1204,7 +1214,14 @@ static void stream_task(void* arg)
   audio_session_t session = *(audio_session_t*)arg;
   free(arg);
   if (!session_is_active(session.session_id))
+  {
+    if (s_stream_task == xTaskGetCurrentTaskHandle())
+    {
+      s_stream_running = false;
+      s_stream_task = NULL;
+    }
     vTaskDelete(NULL);
+  }
   radio_station_t station = session.station;
 
   esp_audio_simple_dec_cfg_t dc = {.dec_type = station.codec == RADIO_CODEC_AAC
@@ -1395,7 +1412,7 @@ static void stream_task(void* arg)
 decode_done:
   esp_audio_simple_dec_close(dec);
 done:
-  if (session_is_active(session.session_id))
+  if (s_stream_task == xTaskGetCurrentTaskHandle())
   {
     s_stream_running = false;
     s_stream_task = NULL;
@@ -1411,12 +1428,16 @@ static void audio_task(void* arg)
   {
     if (xQueueReceive(s_queue, &message, portMAX_DELAY) != pdTRUE)
       continue;
+    if (s_ota_preparing)
+      continue;
     if (s_stream_running || s_fetch_running)
     {
       s_stop_requested = true;
       for (int wait = 0; wait < 100 && (s_stream_running || s_fetch_running); wait++)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+    if (s_ota_preparing)
+      continue;
     xStreamBufferReset(s_sb);
     s_stop_requested = false;
     audio_session_t* stream_session = malloc(sizeof(*stream_session));
@@ -1511,6 +1532,8 @@ esp_err_t radio_audio_play(const radio_station_t* s)
 {
   if (!s || !s_queue)
     return ESP_ERR_INVALID_ARG;
+  if (s_ota_preparing)
+    return ESP_ERR_INVALID_STATE;
   s_muted = true;
   s_paused = false;
   if (s_mute_cb)
@@ -1519,6 +1542,35 @@ esp_err_t radio_audio_play(const radio_station_t* s)
   s_active_session_id = session_id;
   audio_message_t message = {.station = *s, .session_id = session_id};
   return xQueueSend(s_queue, &message, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t radio_audio_prepare_for_ota(void)
+{
+  if (!s_queue)
+    return ESP_ERR_INVALID_STATE;
+
+  s_ota_preparing = true;
+  s_muted = true;
+  s_paused = false;
+  s_stop_requested = true;
+  s_active_session_id++;
+
+  int waited_ms = 0;
+  while ((s_stream_running || s_fetch_running) && waited_ms < OTA_PREPARE_TIMEOUT_MS)
+  {
+    vTaskDelay(pdMS_TO_TICKS(10));
+    waited_ms += 10;
+  }
+
+  if (s_stream_running || s_fetch_running)
+  {
+    ESP_LOGE(TAG, "OTA preparation timed out: stream tasks did not stop");
+    return ESP_ERR_TIMEOUT;
+  }
+
+  xStreamBufferReset(s_sb);
+  ESP_LOGI(TAG, "Audio stream stopped for OTA");
+  return ESP_OK;
 }
 void radio_audio_set_volume(int p)
 {
