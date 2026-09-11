@@ -12,7 +12,8 @@ void radio_display_status(const char* status);
 //-- an empty station list. Wraps/word-wraps like radio_display_status().
 void radio_display_error(const char* message);
 void radio_display_technical(const char* ssid, const char* ip, const char* mac,
-                             const char* hostname, size_t station_count);
+                             const char* hostname, size_t station_count,
+                             bool ota_in_progress);
 //-- Live stream-buffer fill indicator, drawn as a short bar at the bottom-right
 //-- of the Volume screen (0-100). No-op on any other screen.
 void radio_display_buffer_fill(int percent);

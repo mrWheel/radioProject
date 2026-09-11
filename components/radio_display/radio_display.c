@@ -48,6 +48,7 @@ typedef struct
   char mac[DISPLAY_TECH_VALUE_MAX];
   char hostname[DISPLAY_TECH_VALUE_MAX];
   size_t station_count;
+  bool ota_in_progress;
   size_t settings_selected;
   bool settings_editing;
   uint16_t settings_hostname_num;
@@ -136,20 +137,31 @@ static void draw_header(uint16_t width, const char* text, int font_scale)
   tft_ec11_draw_text(4, y, (width - 8) / (6 * font_scale), text ? text : "");
 }
 
-//-- Right-aligned firmware version, smallest font (scale 1), drawn over the
-//-- already-painted header next to the station name.
+//-- Right-aligned firmware version, drawn over the already-painted header.
+//-- The background behind the version text is cleared first so a long station
+//-- name never collides with or bleeds through the version number.
 static void draw_header_version(uint16_t width)
 {
+  const char* version = PROG_VERSION ? PROG_VERSION : "";
+  size_t len = strlen(version);
+  if (len == 0)
+    return;
+
   const int scale = 2;
   int glyph_h = 8 * scale;
   int y = (DISPLAY_HEADER_H - glyph_h) / 2;
   if (y < 2)
     y = 2;
-  const char* version = PROG_VERSION ? PROG_VERSION : "";
-  size_t len = strlen(version);
-  int x = (int)width - (int)len * 6 * scale - 4;
+
+  int text_w = (int)len * 6 * scale;
+  int x = (int)width - text_w - 4;
   if (x < 0)
     x = 0;
+
+  int clear_x = x > 4 ? x - 4 : 0;
+  int clear_w = (int)width - clear_x;
+  tft_ec11_fill_rect(clear_x, 0, clear_w, DISPLAY_HEADER_H, TFT_EC11_BLUE);
+
   tft_ec11_set_background(TFT_EC11_BLUE);
   tft_ec11_set_text_style(TFT_EC11_WHITE, scale);
   tft_ec11_draw_text(x, y, len, version);
@@ -475,7 +487,14 @@ static void draw_technical(const display_message_t* message)
   const int scale = 2;
   const int line_h = 8 * scale + 5;
   char lines[6][DISPLAY_TECH_VALUE_MAX];
-  snprintf(lines[0], sizeof(lines[0]), "InternetRadio %s", PROG_VERSION ? PROG_VERSION : "");
+  if (message->ota_in_progress)
+  {
+    snprintf(lines[0], sizeof(lines[0]), "OTA in Progress");
+  }
+  else
+  {
+    snprintf(lines[0], sizeof(lines[0]), "InternetRadio %s", PROG_VERSION ? PROG_VERSION : "");
+  }
   snprintf(lines[1], sizeof(lines[1]), "SSID: %.88s", message->ssid);
   snprintf(lines[2], sizeof(lines[2]), "IP: %.90s", message->ip);
   snprintf(lines[3], sizeof(lines[3]), "MAC: %.89s", message->mac);
@@ -494,7 +513,12 @@ static void draw_technical(const display_message_t* message)
     int y = ((int)height - 6 * line_h) / 2 + (int)i * line_h;
     if (x < 0)
       x = 0;
-    tft_ec11_set_text_style(i == 0 ? TFT_EC11_CYAN : TFT_EC11_WHITE, scale);
+    uint16_t color = TFT_EC11_WHITE;
+    if (i == 0)
+    {
+      color = message->ota_in_progress ? TFT_EC11_YELLOW : TFT_EC11_CYAN;
+    }
+    tft_ec11_set_text_style(color, scale);
     tft_ec11_draw_text(x, y, length, lines[i]);
   }
 }
@@ -845,9 +869,12 @@ void radio_display_error(const char* message_text)
 }
 
 void radio_display_technical(const char* ssid, const char* ip, const char* mac,
-                             const char* hostname, size_t station_count)
+                             const char* hostname, size_t station_count,
+                             bool ota_in_progress)
 {
-  display_message_t message = {.mode = DISPLAY_MODE_TECHNICAL, .station_count = station_count};
+  display_message_t message = {.mode = DISPLAY_MODE_TECHNICAL,
+                               .station_count = station_count,
+                               .ota_in_progress = ota_in_progress};
   snprintf(message.ssid, sizeof(message.ssid), "%s", ssid ? ssid : "-");
   snprintf(message.ip, sizeof(message.ip), "%s", ip ? ip : "-");
   snprintf(message.mac, sizeof(message.mac), "%s", mac ? mac : "-");

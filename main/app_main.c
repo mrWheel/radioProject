@@ -21,7 +21,7 @@
 #include <string.h>
 
 //-- never remove this constant; it indicates the program version
-const char* PROG_VERSION = "v1.5.5";
+const char* PROG_VERSION = "v1.1.5";
 
 //-- How long the "Connected: SSID / IP" screen stays up before switching to
 //-- the Volume/PLAY screen, so the user can actually read it.
@@ -103,6 +103,7 @@ typedef struct
   TickType_t eq_last_input;
 } app_state_t;
 static QueueHandle_t s_events;
+static volatile bool s_ota_in_progress = false;
 static app_state_t s = {.mode = UI_VOLUME,
                        .volume = CONFIG_RADIO_DEFAULT_VOLUME,
                        .attenuation = SETTINGS_ATTEN_DEFAULT_DB,
@@ -392,7 +393,8 @@ static void show_technical(void)
   esp_read_mac(mac, ESP_MAC_WIFI_STA);
   snprintf(mac_text, sizeof(mac_text), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2],
            mac[3], mac[4], mac[5]);
-  radio_display_technical(ssid, ip, mac_text, s_mdns_hostname, station_store_count());
+  radio_display_technical(ssid, ip, mac_text, s_mdns_hostname, station_store_count(),
+                          s_ota_in_progress);
 }
 
 //-- Fired by radio_audio when fetch_task ends without a deliberate stop/switch
@@ -412,6 +414,9 @@ static void stall_cb(bool stalled, void* ctx)
 static esp_err_t prepare_ota_cb(void* ctx)
 {
   (void)ctx;
+  s_ota_in_progress = true;
+  s.mode = UI_TECHNICAL;
+  show_technical();
   return radio_audio_prepare_for_ota();
 }
 
@@ -464,6 +469,9 @@ static void ui_task(void* arg)
   {
     if (xQueueReceive(s_events, &e, pdMS_TO_TICKS(100)))
     {
+      if (s_ota_in_progress)
+        continue;
+
       size_t count = station_store_count();
       if (e == RADIO_INPUT_AUX_PUSH)
       {
@@ -768,6 +776,9 @@ static void ui_task(void* arg)
         }
       }
     }
+    if (s_ota_in_progress)
+      continue;
+
     if (s.mode == UI_STATION_SELECT &&
         xTaskGetTickCount() - s.last_rotation >= pdMS_TO_TICKS(CONFIG_RADIO_SELECTION_TIMEOUT_MS))
     {
